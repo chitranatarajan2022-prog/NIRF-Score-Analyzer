@@ -8,6 +8,9 @@ const { getGOModel, GO_DB_NAME } = require('./models/DepartmentGO');
 const { getOIModel, OI_DB_NAME } = require('./models/DepartmentOI');
 const { getPublicationModel, PUB_DB_NAME } = require('./models/DepartmentPublication');
 const { getPatentModel, PATENT_DB_NAME } = require('./models/DepartmentPatent');
+const { getConsultancyModel, CONSULTANCY_DB_NAME } = require('./models/DepartmentConsultancy');
+const { getProjectFundingModel, PROJECT_FUNDING_DB_NAME } = require('./models/DepartmentProjectFunding');
+const { getExpenditureModel, EXPENDITURE_DB_NAME } = require('./models/DepartmentExpenditure');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -21,6 +24,15 @@ app.use(express.static(path.join(__dirname, '..')));
 
 // Connect to MongoDB databases
 connectDB();
+
+/**
+ * Helper function: Validate Indian PAN Number format
+ * Standard PAN format: 5 letters, 4 numbers, 1 letter (10 chars, uppercase alphanumeric)
+ */
+function isValidPAN(pan) {
+  if (!pan || typeof pan !== 'string') return false;
+  return /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(pan.trim().toUpperCase());
+}
 
 /**
  * ══════════════════════════════════════════════════
@@ -59,8 +71,45 @@ app.get('/api/faculty/:deptId', async (req, res) => {
 });
 
 /**
+ * GET /api/faculty/:deptId/pan/:panNo
+ * Fetch a single faculty record by PAN number
+ */
+app.get('/api/faculty/:deptId/pan/:panNo', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const panNo = String(req.params.panNo || '').trim().toUpperCase();
+    if (!isValidPAN(panNo)) {
+      return res.status(400).json({ success: false, message: `Invalid PAN Number format: "${panNo}". PAN must be 10 alphanumeric characters (e.g. ABCDE1234F).` });
+    }
+
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getFacultyModel(collectionName);
+
+    const doc = await Model.findOne({ pan_no: panNo }, { _id: 0 });
+    if (!doc) {
+      return res.status(404).json({ success: false, message: `Faculty with PAN "${panNo}" not found` });
+    }
+
+    return res.json({
+      success: true,
+      department: rawDeptId,
+      collection: collectionName,
+      data: doc
+    });
+  } catch (error) {
+    console.error(`Error fetching faculty by PAN for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch faculty record by PAN from MongoDB',
+      error: error.message
+    });
+  }
+});
+
+/**
  * POST /api/faculty/:deptId
- * Store/Override faculty records in the respective department table in 'faculty_data' database
+ * Store/Override faculty records in the respective department table with PAN validation and uniqueness checks
  */
 app.post('/api/faculty/:deptId', async (req, res) => {
   try {
@@ -74,6 +123,29 @@ app.post('/api/faculty/:deptId', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid payload: faculty array required' });
     }
 
+    // Validate PAN number formats and payload internal uniqueness
+    const panSet = new Set();
+    for (let i = 0; i < faculty.length; i++) {
+      const f = faculty[i];
+      if (!f.name) continue;
+      const pan = String(f.pan_no || f.pan || f['PAN Number'] || f['PAN'] || '').trim().toUpperCase();
+      if (pan) {
+        if (!isValidPAN(pan)) {
+          return res.status(400).json({
+            success: false,
+            message: `Invalid PAN Number format on record #${i + 1} ("${pan}"). PAN must be 10 characters (5 letters, 4 digits, 1 letter, e.g. ABCDE1234F).`
+          });
+        }
+        if (panSet.has(pan)) {
+          return res.status(400).json({
+            success: false,
+            message: `Duplicate PAN Number "${pan}" found in upload payload. PAN number must be unique.`
+          });
+        }
+        panSet.add(pan);
+      }
+    }
+
     if (replaceAll) {
       await Model.deleteMany({});
     }
@@ -82,10 +154,23 @@ app.post('/api/faculty/:deptId', async (req, res) => {
     for (let i = 0; i < faculty.length; i++) {
       const f = faculty[i];
       if (!f.name) continue;
+      const pan = String(f.pan_no || f.pan || f['PAN Number'] || f['PAN'] || '').trim().toUpperCase();
+
+      // If not replaceAll, check DB for existing duplicate PAN
+      if (!replaceAll && pan) {
+        const existing = await Model.findOne({ pan_no: pan });
+        if (existing) {
+          return res.status(400).json({
+            success: false,
+            message: `Faculty record with PAN Number "${pan}" already exists in table "${collectionName}". Duplicate PAN numbers are not allowed.`
+          });
+        }
+      }
 
       const doc = await Model.create({
         sl_no: f.sl_no !== undefined ? Number(f.sl_no) : (i + 1),
         name: String(f.name).trim(),
+        pan_no: pan,
         age: f.age ? Number(f.age) : null,
         designation: f.designation ? String(f.designation).trim() : '',
         gender: f.gender ? String(f.gender).trim().toUpperCase() : '',
@@ -111,9 +196,48 @@ app.post('/api/faculty/:deptId', async (req, res) => {
     });
   } catch (error) {
     console.error(`Error saving faculty for ${req.params.deptId}:`, error);
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Duplicate PAN Number error: A faculty record with this PAN Number already exists in database.',
+        error: error.message
+      });
+    }
     return res.status(500).json({
       success: false,
-      message: 'Failed to save faculty records to MongoDB',
+      message: 'Failed to save faculty records to MongoDB: ' + error.message,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * DELETE /api/faculty/:deptId/pan/:panNo
+ * Delete a faculty record by PAN number
+ */
+app.delete('/api/faculty/:deptId/pan/:panNo', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const panNo = String(req.params.panNo || '').trim().toUpperCase();
+    if (!isValidPAN(panNo)) {
+      return res.status(400).json({ success: false, message: `Invalid PAN Number format: "${panNo}".` });
+    }
+
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getFacultyModel(collectionName);
+
+    const result = await Model.deleteOne({ pan_no: panNo });
+    return res.json({
+      success: true,
+      message: `Deleted faculty record with PAN "${panNo}" from table "${collectionName}"`,
+      deletedCount: result.deletedCount
+    });
+  } catch (error) {
+    console.error(`Error deleting faculty by PAN for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete faculty record from MongoDB',
       error: error.message
     });
   }
@@ -148,7 +272,7 @@ app.delete('/api/faculty/:deptId', async (req, res) => {
 
 /**
  * PATCH /api/faculty/:deptId/status
- * Update currently_working status and leaving_date for a specific faculty member
+ * Update currently_working status and leaving_date for a specific faculty member (using pan_no, sl_no, or name)
  */
 app.patch('/api/faculty/:deptId/status', async (req, res) => {
   try {
@@ -157,14 +281,15 @@ app.patch('/api/faculty/:deptId/status', async (req, res) => {
     const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
     const Model = getFacultyModel(collectionName);
 
-    const { name, sl_no, currently_working, leaving_date, status } = req.body;
-    if (!name && sl_no === undefined) {
-      return res.status(400).json({ success: false, message: 'Faculty name or sl_no required' });
+    const { pan_no, name, sl_no, currently_working, leaving_date, status } = req.body;
+    if (!pan_no && !name && sl_no === undefined) {
+      return res.status(400).json({ success: false, message: 'Faculty PAN number, name or sl_no required' });
     }
 
     const query = {};
-    if (sl_no !== undefined && !isNaN(Number(sl_no))) query.sl_no = Number(sl_no);
-    if (name) query.name = new RegExp(`^${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    if (pan_no) query.pan_no = String(pan_no).trim().toUpperCase();
+    else if (sl_no !== undefined && !isNaN(Number(sl_no))) query.sl_no = Number(sl_no);
+    else if (name) query.name = new RegExp(`^${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
 
     const updateData = {
       currently_working: currently_working || 'No',
@@ -478,6 +603,116 @@ app.delete('/api/go/:deptId', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to clear GO data from MongoDB',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * ══════════════════════════════════════════════════
+ * EXPENDITURE DATA API ROUTES (Database: expenditure_data)
+ * ══════════════════════════════════════════════════
+ */
+
+/**
+ * GET /api/expenditure/:deptId
+ * Fetch Expenditure data for a specific department from 'expenditure_data' database
+ */
+app.get('/api/expenditure/:deptId', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+
+    const Model = getExpenditureModel(collectionName);
+    let record = await Model.findOne({ department: collectionName }, { _id: 0 });
+    if (!record) {
+      record = await Model.findOne({}, { _id: 0 });
+    }
+
+    return res.json({
+      success: true,
+      department: rawDeptId,
+      collection: collectionName,
+      database: EXPENDITURE_DB_NAME,
+      data: record
+    });
+  } catch (error) {
+    console.error(`Error fetching Expenditure data for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch Expenditure data from MongoDB',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/expenditure/:deptId
+ * Save or update Expenditure data for a specific department in 'expenditure_data' database
+ */
+app.post('/api/expenditure/:deptId', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getExpenditureModel(collectionName);
+
+    const { capex, opex } = req.body;
+
+    const updateData = {
+      department: collectionName,
+      capex: capex || {},
+      opex: opex || {}
+    };
+
+    const doc = await Model.findOneAndUpdate(
+      { department: collectionName },
+      updateData,
+      { upsert: true, new: true, runValidators: true }
+    );
+
+    return res.json({
+      success: true,
+      message: `Successfully saved Expenditure data for department "${collectionName}"`,
+      department: rawDeptId,
+      collection: collectionName,
+      database: EXPENDITURE_DB_NAME,
+      data: doc
+    });
+  } catch (error) {
+    console.error(`Error saving Expenditure data for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save Expenditure data to MongoDB',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * DELETE /api/expenditure/:deptId
+ * Clear or reset Expenditure data for a specific department
+ */
+app.delete('/api/expenditure/:deptId', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getExpenditureModel(collectionName);
+
+    await Model.deleteMany({});
+    return res.json({
+      success: true,
+      message: `Cleared Expenditure data for table "${collectionName}"`,
+      department: rawDeptId,
+      collection: collectionName
+    });
+  } catch (error) {
+    console.error(`Error clearing Expenditure data for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to clear Expenditure data from MongoDB',
       error: error.message
     });
   }
@@ -1184,6 +1419,605 @@ app.delete('/api/patents/:deptId', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to clear patent records from MongoDB',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * ══════════════════════════════════════════════════
+ * CONSULTANCY DATA API ROUTES (Database: consultancy_data)
+ * ══════════════════════════════════════════════════
+ */
+
+/**
+ * GET /api/consultancy/:deptId
+ * Fetch all consultancy records for a department from 'consultancy_data' database
+ */
+app.get('/api/consultancy/:deptId', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+
+    const Model = getConsultancyModel(collectionName);
+    const records = await Model.find({}, { _id: 0 }).sort({ sl_no: 1, createdAt: 1 });
+
+    return res.json({
+      success: true,
+      department: rawDeptId,
+      collection: collectionName,
+      database: CONSULTANCY_DB_NAME,
+      count: records.length,
+      data: records
+    });
+  } catch (error) {
+    console.error(`Error fetching consultancy for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch consultancy records from MongoDB',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/consultancy/:deptId
+ * Save / replace the entire consultancy list for a department in 'consultancy_data'
+ */
+app.post('/api/consultancy/:deptId', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getConsultancyModel(collectionName);
+
+    const records = Array.isArray(req.body.records) ? req.body.records : (Array.isArray(req.body) ? req.body : []);
+
+    const cleaned = records.map((r, idx) => ({
+      department: collectionName,
+      sl_no: Number(r.sl_no) || (idx + 1),
+      faculty_name: String(r.faculty_name || '').trim(),
+      funding_agency: String(r.funding_agency || '').trim(),
+      amount_received: Number(r.amount_received || 0),
+      project_title: String(r.project_title || '').trim(),
+      month_year: String(r.month_year || '').trim(),
+      total_projects: Number(r.total_projects || 0),
+      total_client_orgs: Number(r.total_client_orgs || 0),
+      proof_document: String(r.proof_document || '').trim()
+    }));
+
+    await Model.deleteMany({});
+    if (cleaned.length > 0) {
+      await Model.insertMany(cleaned);
+    }
+
+    const saved = await Model.find({}, { _id: 0 }).sort({ sl_no: 1 });
+
+    return res.json({
+      success: true,
+      message: `Successfully saved ${saved.length} consultancy records for table "${collectionName}"`,
+      department: rawDeptId,
+      collection: collectionName,
+      database: CONSULTANCY_DB_NAME,
+      count: saved.length,
+      data: saved
+    });
+  } catch (error) {
+    console.error(`Error saving consultancy for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save consultancy records to MongoDB',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/consultancy/:deptId/row
+ * Add or update a single consultancy row
+ */
+app.post('/api/consultancy/:deptId/row', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getConsultancyModel(collectionName);
+
+    const r = req.body;
+    const slNo = Number(r.sl_no);
+    if (!r.faculty_name) {
+      return res.status(400).json({ success: false, message: 'Faculty Name is required' });
+    }
+
+    const rowData = {
+      department: collectionName,
+      sl_no: slNo || (await Model.countDocuments() + 1),
+      faculty_name: String(r.faculty_name || '').trim(),
+      funding_agency: String(r.funding_agency || '').trim(),
+      amount_received: Number(r.amount_received || 0),
+      project_title: String(r.project_title || '').trim(),
+      month_year: String(r.month_year || '').trim(),
+      total_projects: Number(r.total_projects || 0),
+      total_client_orgs: Number(r.total_client_orgs || 0),
+      proof_document: String(r.proof_document || '').trim()
+    };
+
+    if (slNo) {
+      await Model.findOneAndUpdate({ sl_no: slNo }, rowData, { upsert: true, new: true });
+    } else {
+      await Model.create(rowData);
+    }
+
+    const records = await Model.find({}, { _id: 0 }).sort({ sl_no: 1 });
+    return res.json({
+      success: true,
+      message: 'Consultancy record saved successfully',
+      data: records
+    });
+  } catch (error) {
+    console.error(`Error saving consultancy row for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save consultancy row',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * DELETE /api/consultancy/:deptId/row/:slNo
+ * Delete a single consultancy record by sl_no
+ */
+app.delete('/api/consultancy/:deptId/row/:slNo', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const slNo = Number(req.params.slNo);
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getConsultancyModel(collectionName);
+
+    await Model.deleteOne({ sl_no: slNo });
+    const records = await Model.find({}, { _id: 0 }).sort({ sl_no: 1 });
+    return res.json({
+      success: true,
+      message: `Deleted consultancy record #${slNo}`,
+      data: records
+    });
+  } catch (error) {
+    console.error(`Error deleting consultancy for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete consultancy record',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/consultancy/:deptId/etl-pipeline
+ * Upload and process Excel rows for consultancy data (ETL)
+ */
+app.post('/api/consultancy/:deptId/etl-pipeline', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getConsultancyModel(collectionName);
+
+    const { rows, mode } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ success: false, message: 'No rows provided in Excel payload' });
+    }
+
+    const cleaned = rows.map((r, idx) => ({
+      department: collectionName,
+      sl_no: Number(r.sl_no || r['Sl.No.'] || r['Sl. No.'] || r['SL.NO.'] || r['Sl No']) || (idx + 1),
+      faculty_name: String(r.faculty_name || r['Name of the Faculty'] || r['Faculty Name'] || r['Faculty'] || '').trim(),
+      funding_agency: String(r.funding_agency || r['Name of Funding Agency'] || r['Funding Agency'] || r['Agency'] || '').trim(),
+      amount_received: Number(r.amount_received || r['Amount Received'] || r['Amount Received (₹)'] || r['Amount'] || 0),
+      project_title: String(r.project_title || r['Title of the Project'] || r['Project Title'] || r['Title'] || '').trim(),
+      month_year: String(r.month_year || r['Month and Year (MMYY)'] || r['Month Year'] || r['Month'] || '').trim(),
+      total_projects: Number(r.total_projects || r['Total no. of Consultancy Projects'] || r['Total Projects'] || 0),
+      total_client_orgs: Number(r.total_client_orgs || r['Total no. of Client Organizations'] || r['Total Client Organizations'] || r['Client Organizations'] || 0),
+      proof_document: String(r.proof_document || r['Proof of Documents'] || r['Proof Link'] || r['Proof'] || r['Link'] || '').trim()
+    })).filter(r => r.faculty_name);
+
+    if (cleaned.length === 0) {
+      return res.status(400).json({ success: false, message: 'No valid consultancy rows found (Faculty Name missing)' });
+    }
+
+    if (mode !== 'append') {
+      await Model.deleteMany({});
+    }
+    await Model.insertMany(cleaned);
+
+    const allRecords = await Model.find({}, { _id: 0 }).sort({ sl_no: 1 });
+
+    return res.json({
+      success: true,
+      message: `ETL Pipeline successfully processed and saved ${cleaned.length} consultancy records to table "${collectionName}"`,
+      department: rawDeptId,
+      collection: collectionName,
+      database: CONSULTANCY_DB_NAME,
+      importedCount: cleaned.length,
+      totalCount: allRecords.length,
+      data: allRecords
+    });
+  } catch (error) {
+    console.error(`Error in consultancy ETL pipeline for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to process consultancy ETL pipeline: ' + error.message
+    });
+  }
+});
+
+/**
+ * DELETE /api/consultancy/:deptId
+ * Clear all consultancy records for a department
+ */
+app.delete('/api/consultancy/:deptId', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getConsultancyModel(collectionName);
+
+    await Model.deleteMany({});
+    return res.json({
+      success: true,
+      message: `Cleared all consultancy records for table "${collectionName}"`,
+      department: rawDeptId,
+      collection: collectionName
+    });
+  } catch (error) {
+    console.error(`Error clearing consultancy for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to clear consultancy records from MongoDB',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * ═════════════════════════════════════════════════════════
+ * PROJECT FUNDING DATA API ROUTES (Database: project_funding_data)
+ * ═════════════════════════════════════════════════════════
+ */
+
+/**
+ * GET /api/project-funding/:deptId
+ * Fetch all project funding records for a department
+ */
+app.get('/api/project-funding/:deptId', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getProjectFundingModel(collectionName);
+
+    const records = await Model.find({}, { _id: 0 }).sort({ sl_no: 1, createdAt: 1 });
+    return res.json({
+      success: true,
+      department: rawDeptId,
+      collection: collectionName,
+      database: PROJECT_FUNDING_DB_NAME,
+      data: records
+    });
+  } catch (error) {
+    console.error(`Error fetching project funding for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch project funding records from MongoDB',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/project-funding/:deptId
+ * Save/Replace all project funding records for a department with title uniqueness check
+ */
+app.post('/api/project-funding/:deptId', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getProjectFundingModel(collectionName);
+
+    const { records } = req.body;
+    if (!Array.isArray(records)) {
+      return res.status(400).json({ success: false, message: 'Invalid payload: records array required' });
+    }
+
+    // Validate project title uniqueness within array
+    const titleSet = new Set();
+    const cleaned = [];
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      const pTitle = String(r.project_title || '').trim();
+      const pName = String(r.pi_name || '').trim();
+      if (!pName || !pTitle) continue;
+
+      const titleLower = pTitle.toLowerCase();
+      if (titleSet.has(titleLower)) {
+        return res.status(400).json({
+          success: false,
+          message: `Duplicate Project Title found: "${pTitle}". Title of the project must be unique.`
+        });
+      }
+      titleSet.add(titleLower);
+
+      cleaned.push({
+        department: collectionName,
+        sl_no: Number(r.sl_no) || (i + 1),
+        pi_name: pName,
+        copi_name: String(r.copi_name || '').trim(),
+        funding_agency: String(r.funding_agency || '').trim(),
+        amount_received: Number(r.amount_received || 0),
+        project_title: pTitle,
+        month_year: String(r.month_year || '').trim()
+      });
+    }
+
+    await Model.deleteMany({});
+    if (cleaned.length > 0) {
+      await Model.insertMany(cleaned);
+    }
+
+    const saved = await Model.find({}, { _id: 0 }).sort({ sl_no: 1 });
+    return res.json({
+      success: true,
+      message: `Successfully saved ${saved.length} project funding records for department "${collectionName}"`,
+      department: rawDeptId,
+      collection: collectionName,
+      database: PROJECT_FUNDING_DB_NAME,
+      count: saved.length,
+      data: saved
+    });
+  } catch (error) {
+    console.error(`Error saving project funding for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save project funding records to MongoDB: ' + error.message,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/project-funding/:deptId/row
+ * Add or update a single project funding row with title uniqueness check
+ */
+app.post('/api/project-funding/:deptId/row', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getProjectFundingModel(collectionName);
+
+    const r = req.body;
+    const slNo = Number(r.sl_no);
+    const piName = String(r.pi_name || '').trim();
+    const projectTitle = String(r.project_title || '').trim();
+
+    if (!piName) {
+      return res.status(400).json({ success: false, message: 'Name of the PI is required' });
+    }
+    if (!projectTitle) {
+      return res.status(400).json({ success: false, message: 'Title of the Project is required' });
+    }
+
+    // Check project_title uniqueness in DB (excluding current sl_no)
+    const escapedTitle = projectTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const existing = await Model.findOne({
+      sl_no: { $ne: slNo },
+      project_title: { $regex: new RegExp(`^${escapedTitle}$`, 'i') }
+    });
+
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: `Project Title "${projectTitle}" already exists. Title of the project must be unique.`
+      });
+    }
+
+    const rowData = {
+      department: collectionName,
+      sl_no: slNo || (await Model.countDocuments() + 1),
+      pi_name: piName,
+      copi_name: String(r.copi_name || '').trim(),
+      funding_agency: String(r.funding_agency || '').trim(),
+      amount_received: Number(r.amount_received || 0),
+      project_title: projectTitle,
+      month_year: String(r.month_year || '').trim()
+    };
+
+    if (slNo) {
+      await Model.findOneAndUpdate({ sl_no: slNo }, rowData, { upsert: true, new: true });
+    } else {
+      await Model.create(rowData);
+    }
+
+    const records = await Model.find({}, { _id: 0 }).sort({ sl_no: 1 });
+    return res.json({
+      success: true,
+      message: 'Project funding record saved successfully',
+      data: records
+    });
+  } catch (error) {
+    console.error(`Error saving project funding row for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save project funding row: ' + error.message,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * DELETE /api/project-funding/:deptId/row/:slNo
+ * Delete a single project funding record by sl_no
+ */
+app.delete('/api/project-funding/:deptId/row/:slNo', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const slNo = Number(req.params.slNo);
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getProjectFundingModel(collectionName);
+
+    await Model.deleteOne({ sl_no: slNo });
+    const records = await Model.find({}, { _id: 0 }).sort({ sl_no: 1 });
+    return res.json({
+      success: true,
+      message: `Deleted project funding record #${slNo}`,
+      data: records
+    });
+  } catch (error) {
+    console.error(`Error deleting project funding row for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete project funding record',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/project-funding/:deptId/etl-pipeline
+ * Process Excel rows for project funding data (ETL)
+ */
+app.post('/api/project-funding/:deptId/etl-pipeline', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getProjectFundingModel(collectionName);
+
+    const { rows, mode } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ success: false, message: 'No rows provided in Excel payload' });
+    }
+
+    // Existing titles if mode === 'append'
+    let existingTitles = new Set();
+    if (mode === 'append') {
+      const dbRecords = await Model.find({}, { project_title: 1 });
+      dbRecords.forEach(d => {
+        if (d.project_title) existingTitles.add(d.project_title.trim().toLowerCase());
+      });
+    }
+
+    const cleaned = [];
+    const fileTitles = new Set();
+    const duplicateTitlesInFile = [];
+
+    for (let idx = 0; idx < rows.length; idx++) {
+      const r = rows[idx];
+      const piName = String(
+        r.pi_name || r['Name of the PI'] || r['PI Name'] || r['PI'] || r['Name of PI'] || ''
+      ).trim();
+      const projectTitle = String(
+        r.project_title || r['Title of the Project'] || r['Project Title'] || r['Title'] || ''
+      ).trim();
+
+      if (!piName || !projectTitle) continue;
+
+      const titleLower = projectTitle.toLowerCase();
+      if (fileTitles.has(titleLower) || existingTitles.has(titleLower)) {
+        duplicateTitlesInFile.push(projectTitle);
+        continue; // skip duplicate title to maintain uniqueness requirement
+      }
+
+      fileTitles.add(titleLower);
+
+      cleaned.push({
+        department: collectionName,
+        sl_no: Number(r.sl_no || r['Sl.No.'] || r['Sl. No.'] || r['SL.NO.'] || r['Sl No']) || (cleaned.length + 1),
+        pi_name: piName,
+        copi_name: String(
+          r.copi_name || r['Name of the CO-PI'] || r['CO-PI Name'] || r['CO-PI'] || r['Name of CO-PI'] || r['CO PI'] || ''
+        ).trim(),
+        funding_agency: String(
+          r.funding_agency || r['Name of Funding Agency'] || r['Funding Agency'] || r['Agency'] || ''
+        ).trim(),
+        amount_received: Number(
+          r.amount_received || r['Amount Received'] || r['Amount Received (₹)'] || r['Amount'] || 0
+        ),
+        project_title: projectTitle,
+        month_year: String(
+          r.month_year || r['Month and Year (MON YYYY)'] || r['Month and Year'] || r['Month Year'] || r['Month'] || r['Year'] || ''
+        ).trim()
+      });
+    }
+
+    if (cleaned.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: duplicateTitlesInFile.length > 0
+          ? `No new unique records imported. Skipped ${duplicateTitlesInFile.length} rows because Project Title must be unique.`
+          : 'No valid Project Funding rows found in Excel file (Name of the PI and Title of the Project are required)'
+      });
+    }
+
+    if (mode !== 'append') {
+      await Model.deleteMany({});
+    }
+    await Model.insertMany(cleaned);
+
+    const allRecords = await Model.find({}, { _id: 0 }).sort({ sl_no: 1 });
+
+    let successMsg = `ETL Pipeline successfully processed and saved ${cleaned.length} Project Funding records to database table "${collectionName}"`;
+    if (duplicateTitlesInFile.length > 0) {
+      successMsg += `. Note: Skipped ${duplicateTitlesInFile.length} duplicate project title(s) to enforce uniqueness.`;
+    }
+
+    return res.json({
+      success: true,
+      message: successMsg,
+      department: rawDeptId,
+      collection: collectionName,
+      database: PROJECT_FUNDING_DB_NAME,
+      importedCount: cleaned.length,
+      skippedCount: duplicateTitlesInFile.length,
+      totalCount: allRecords.length,
+      data: allRecords
+    });
+  } catch (error) {
+    console.error(`Error in Project Funding ETL pipeline for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to process Project Funding ETL pipeline: ' + error.message
+    });
+  }
+});
+
+/**
+ * DELETE /api/project-funding/:deptId
+ * Clear all project funding records for a department
+ */
+app.delete('/api/project-funding/:deptId', async (req, res) => {
+  try {
+    const rawDeptId = req.params.deptId;
+    const normalizedKey = (rawDeptId || '').trim().toUpperCase();
+    const collectionName = DEPARTMENT_ALIAS_MAP[normalizedKey] || normalizedKey;
+    const Model = getProjectFundingModel(collectionName);
+
+    await Model.deleteMany({});
+    return res.json({
+      success: true,
+      message: `Cleared all project funding records for table "${collectionName}"`,
+      department: rawDeptId,
+      collection: collectionName
+    });
+  } catch (error) {
+    console.error(`Error clearing project funding for ${req.params.deptId}:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to clear project funding records from MongoDB',
       error: error.message
     });
   }

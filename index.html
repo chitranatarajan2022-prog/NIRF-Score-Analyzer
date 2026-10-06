@@ -845,9 +845,11 @@ const PARAM_WEIGHT={TLR:0.30,RPC:0.30,GO:0.20,OI:0.15,Perception:0.05};
 let S={};
 let CU=null; // current user
 
-const DATA_VERSION='go-data-mongo-v1';
+const DATA_VERSION='faculty-pan-v2';
 function loadStore(){
   try{S=JSON.parse(localStorage.getItem('nirf27')||'{}')}catch(e){S={}}
+  if(S.exp) delete S.exp;
+  S.exp = {};
   if(!S.publications) S.publications={};
   if(S._facultyLoaded) delete S._facultyLoaded;
   if(!S.seeded || S.dataVersion!==DATA_VERSION){
@@ -863,7 +865,7 @@ function loadStore(){
         status:'draft',
         completion:Math.floor(50+Math.random()*45),
       };
-      S.faculty[d.id]=d.id==='ECE'?ECE_REAL_FACULTY.map(f=>({...f})):genFaculty(d.id);
+      S.faculty[d.id]=d.id==='ECE'?ECE_REAL_FACULTY.map((f,idx)=>({...f, pan_no: f.pan_no || ('ECEFA' + String(1000 + idx + 1).padStart(4, '0').slice(-4) + 'P') })):genFaculty(d.id);
       S.faculty_mode[d.id]='system'; // 'system' | 'direct'
       S.faculty_direct[d.id]={F_available:0,N_phd:0,F1:0,F2:0,F3:0,F_female:0};
       S.exp[d.id]=genExp();
@@ -896,8 +898,10 @@ function genFaculty(deptId){
   const ns=['Ramesh K','Sunita M','Priya R','Arun S','Deepa V','Kiran B','Meera N','Suresh P','Anitha C','Vijay T','Lakshmi D','Ravi G','Pooja H','Kumar J','Nandini S','Bharath V'];
   const gs=['M','F','F','M','F','M','F','M','F','M','F','M','F','M','F','M'];
   const cnt=14+Math.floor(Math.random()*8);
+  const dPre = (deptId || 'FAC').substring(0, 3).padEnd(3, 'X').toUpperCase();
   return Array.from({length:cnt},(_,i)=>({
     id:'F'+(i+1),name:ns[i%ns.length]+' ('+deptId+')',
+    pan_no: `${dPre}FA${String(1000 + i + 1).padStart(4, '0').slice(-4)}P`,
     gender:gs[i%gs.length],qualification:qs[i%qs.length],
     experience:Math.floor(14+Math.random()*220),
     status:Math.random()>0.12?'active':'left',
@@ -1000,7 +1004,10 @@ const SHEETS_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbxNoXNWXb36H
 let _syncTimer = null;
 
 function save(){
-  localStorage.setItem('nirf27', JSON.stringify(S));
+  const sCopy = JSON.parse(JSON.stringify(S));
+  delete sCopy.faculty;
+  delete sCopy.exp;
+  localStorage.setItem('nirf27', JSON.stringify(sCopy));
   // Debounce: wait 3 seconds after last save, then sync
   clearTimeout(_syncTimer);
   _syncTimer = setTimeout(syncToSheets, 3000);
@@ -1358,6 +1365,7 @@ function initApp(){
     fetchDepartmentOIFromDB(CU.deptId);
     fetchDepartmentPublicationsFromDB(CU.deptId);
     fetchDepartmentPatentsFromDB(CU.deptId);
+    fetchDepartmentConsultancyFromDB(CU.deptId);
   }
   nav('dashboard');
 }
@@ -2205,10 +2213,14 @@ async function fetchDepartmentFacultyFromDB(deptId){
         );
         const lDate = item.leaving_date || item.leaving || null;
         const jDate = item.joining_date || item.joining || null;
+        const dPre = (deptId || 'FAC').substring(0, 3).padEnd(3, 'X').toUpperCase();
+        const numP = String(1000 + (item.sl_no || (idx + 1))).padStart(4, '0');
+        const fallbackPan = `${dPre}FA${numP.slice(-4)}P`;
         return {
           id: 'F_' + (item.sl_no || (idx + 1)),
           sl_no: item.sl_no || (idx + 1),
           name: item.name,
+          pan_no: String(item.pan_no || item.pan || fallbackPan).trim().toUpperCase(),
           age: (item.age !== undefined && item.age !== null) ? Number(item.age) : null,
           designation: item.designation || '',
           gender: item.gender || '',
@@ -2328,7 +2340,7 @@ function renderFaculty(activeTabId, skipFetch){
           </div>
           <div class="cb">
             <div class="alt alt-i" style="margin-bottom:12px">
-              <div><b>Required columns:</b> Sl. No. | Name of the Faculty | Age | Designation | Gender | Qualification | Experience (in Months) | Currently working with institution? | Joining Date | Leaving Date | Association Type<br>
+              <div><b>Required columns:</b> Sl. No. | Name of the Faculty | PAN Number | Age | Designation | Gender | Qualification | Experience (in Months) | Currently working with institution? | Joining Date | Leaving Date | Association Type<br>
               <span style="font-size:11px">Qualification: Ph.D / M.Tech / M.E. / M.Sc / MBA / B.Tech &nbsp;|&nbsp; Gender: Male / Female &nbsp;|&nbsp; Currently Working: Yes / No &nbsp;|&nbsp; Dates: DD-MM-YYYY or YYYY-MM-DD</span></div>
             </div>
             <label style="display:flex;flex-direction:column;align-items:center;justify-content:center;border:2px dashed var(--g300);border-radius:var(--r);padding:26px;cursor:pointer;transition:.15s;background:var(--white)" onmouseover="this.style.borderColor='var(--blue)';this.style.background='var(--sky)'" onmouseout="this.style.borderColor='var(--g300)';this.style.background='var(--white)'">
@@ -2344,6 +2356,7 @@ function renderFaculty(activeTabId, skipFetch){
           <div class="cb">
             <div class="frow fc2">
               <div class="fl"><label class="req">Faculty Name</label><input type="text" id="f-nm" class="inp" placeholder="Full name"></div>
+              <div class="fl"><label class="req">PAN Number <span style="font-size:10px;color:var(--amber);font-weight:600">(Unique Identifier)</span></label><input type="text" id="f-pan" class="inp" placeholder="e.g. ABCDE1234F" maxlength="10" style="text-transform:uppercase;font-family:monospace;font-weight:700"></div>
               <div class="fl"><label>Age</label><input type="number" id="f-age" class="inp" placeholder="e.g. 38" min="20"></div>
               <div class="fl"><label>Designation</label><input type="text" id="f-desig" class="inp" placeholder="e.g. Assistant Professor"></div>
               <div class="fl"><label class="req">Gender</label><select id="f-gn" class="inp"><option value="">Select</option><option value="M">Male</option><option value="F">Female</option><option value="O">Other/Transgender</option></select></div>
@@ -2366,6 +2379,7 @@ function renderFaculty(activeTabId, skipFetch){
             <tr>
               <th>Sl. No.</th>
               <th>Name of the Faculty</th>
+              <th>PAN Number</th>
               <th>Age</th>
               <th>Designation</th>
               <th>Gender</th>
@@ -2380,6 +2394,7 @@ function renderFaculty(activeTabId, skipFetch){
           <tbody>${fac.included.map((f,i)=>`<tr class="faculty-in">
             <td>${f.sl_no || (i+1)}</td>
             <td><b>${f.name}</b></td>
+            <td><code style="font-family:monospace;font-weight:700;color:var(--navy);background:var(--sky);padding:2px 6px;border-radius:4px;border:1px solid rgba(37,99,235,.2)">${f.pan_no || '—'}</code></td>
             <td>${(f.age !== null && f.age !== undefined && f.age !== '') ? f.age : '—'}</td>
             <td>${f.designation || '—'}</td>
             <td>${f.gender || '—'}</td>
@@ -2394,21 +2409,21 @@ function renderFaculty(activeTabId, skipFetch){
             <td>${f.joining || f.joining_date || '—'}</td>
             <td>${f.leaving || f.leaving_date || '—'}</td>
             <td>${f.association || f.association_type || 'Regular'}</td>
-          </tr>`).join('')}${!fac.included.length?'<tr><td colspan="11" class="no-content">No faculty included yet — upload Excel or add manually.</td></tr>':''}</tbody>
+          </tr>`).join('')}${!fac.included.length?'<tr><td colspan="12" class="no-content">No faculty included yet — upload Excel or add manually.</td></tr>':''}</tbody>
         </table></div>
       </div>
     </div>
     <div class="tbc ${activeTab==='fac-exc'?'active':''}" id="fac-exc">
       <div class="alt alt-w">These faculty are NOT counted in NIRF FSR/FQE calculations. Review reasons below.</div>
       <div class="card"><div class="tw"><table>
-        <thead><tr><th>Sl. No.</th><th>Name</th><th>Designation</th><th>Qualification</th><th>Currently Working</th><th>Joining</th><th>Leaving Date</th><th>Reason for Exclusion</th><th>Action</th></tr></thead>
+        <thead><tr><th>Sl. No.</th><th>Name</th><th>PAN Number</th><th>Designation</th><th>Qualification</th><th>Currently Working</th><th>Joining</th><th>Leaving Date</th><th>Reason for Exclusion</th><th>Action</th></tr></thead>
         <tbody>${fac.excluded.map((f,i)=>`<tr class="faculty-ex">
-          <td>${f.sl_no || (i+1)}</td><td><b>${f.name}</b></td><td>${f.designation||'—'}</td><td>${f.qualification||'—'}</td>
+          <td>${f.sl_no || (i+1)}</td><td><b>${f.name}</b></td><td><code style="font-family:monospace;font-weight:700;color:var(--navy);background:var(--g100);padding:2px 6px;border-radius:4px">${f.pan_no || '—'}</code></td><td>${f.designation||'—'}</td><td>${f.qualification||'—'}</td>
           <td><span class="badge b-pen">${(f.status==='left'||String(f.currently_working||'').toLowerCase()==='no'||String(f.currently_working||'').toLowerCase()==='left') ? 'Left' : (f.currently_working || 'Left')}</span></td>
           <td>${f.joining||f.joining_date||'—'}</td><td>${f.leaving||f.leaving_date||'—'}</td>
           <td>${f.reasons.map(r=>`<span class="badge b-cor" style="margin:1px">${r}</span>`).join(' ')}</td>
           <td><button class="btn btn-out btn-sm" style="font-size:11px;padding:3px 8px" onclick="setFacultyActive('${(f.name||'').replace(/'/g, "\\'")}', ${f.sl_no || (i+1)})" title="Restore to Active">Revert to Active</button></td>
-        </tr>`).join('')}${!fac.excluded.length?'<tr><td colspan="9" class="no-content">No excluded faculty.</td></tr>':''}</tbody>
+        </tr>`).join('')}${!fac.excluded.length?'<tr><td colspan="10" class="no-content">No excluded faculty.</td></tr>':''}</tbody>
       </table></div></div>
     </div>
     <div class="tbc ${activeTab==='fac-calc'?'active':''}" id="fac-calc">
@@ -2487,37 +2502,64 @@ function swTab(el,target){
 
 async function addFac(){
   const nm=document.getElementById('f-nm')?.value?.trim();
-  if(!nm){alert('Enter faculty name');return}
+  const panNo=document.getElementById('f-pan')?.value?.trim()?.toUpperCase();
+
+  if(!nm){ alert('Please enter Faculty Name'); return; }
+  if(!panNo){ alert('Please enter PAN Number for the faculty'); return; }
+
+  // Enforce standard Indian PAN format: 5 letters, 4 numbers, 1 letter (10 alphanumeric chars)
+  if(!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(panNo)){
+    alert(`Invalid PAN Number format: "${panNo}". PAN must be 10 alphanumeric characters (e.g. ABCDE1234F).`);
+    return;
+  }
+
   const id=CU.deptId;
+  const currentFacList = S.faculty[id] || [];
+  const isDup = currentFacList.some(f => (f.pan_no || '').toUpperCase() === panNo);
+  if(isDup){
+    alert(`Duplicate PAN Number! A faculty with PAN "${panNo}" already exists in department "${id}". Duplicate PANs are not allowed.`);
+    return;
+  }
+
   const fRec={
-    sl_no:(S.faculty[id]||[]).length+1,
-    name:nm,
-    age:Number(document.getElementById('f-age')?.value)||null,
-    designation:document.getElementById('f-desig')?.value?.trim()||'',
-    gender:document.getElementById('f-gn').value,
-    qualification:document.getElementById('f-ql').value,
-    experience:Number(document.getElementById('f-ex').value)||0,
-    currently_working:document.getElementById('f-st').value==='active'?'Yes':'No',
-    joining_date:document.getElementById('f-jn').value||null,
-    leaving_date:document.getElementById('f-lv').value||null,
-    association_type:document.getElementById('f-assoc')?.value||'Regular',
-    status:document.getElementById('f-st').value
+    sl_no: currentFacList.length + 1,
+    name: nm,
+    pan_no: panNo,
+    age: Number(document.getElementById('f-age')?.value) || null,
+    designation: document.getElementById('f-desig')?.value?.trim() || '',
+    gender: document.getElementById('f-gn').value,
+    qualification: document.getElementById('f-ql').value,
+    experience: Number(document.getElementById('f-ex').value) || 0,
+    currently_working: document.getElementById('f-st').value === 'active' ? 'Yes' : 'No',
+    joining_date: document.getElementById('f-jn').value || null,
+    leaving_date: document.getElementById('f-lv').value || null,
+    association_type: document.getElementById('f-assoc')?.value || 'Regular',
+    status: document.getElementById('f-st').value
   };
 
-  try{
-    const apiBase=(window.location.protocol.startsWith('http')&&window.location.port==='5000')?'':'http://localhost:5000';
-    await fetch(`${apiBase}/api/faculty/${id}`,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({faculty:[fRec],replaceAll:false})
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/faculty/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ faculty: [fRec], replaceAll: false })
     });
-  }catch(e){}
+    const resJson = await res.json();
+    if (!res.ok || !resJson.success) {
+      alert(`⚠️ Failed to save faculty record: ${resJson.message || 'Database error'}`);
+      return;
+    }
+  } catch(e) {
+    alert(`⚠️ Failed to save faculty record to DB: ${e.message}`);
+    return;
+  }
 
   await fetchDepartmentFacultyFromDB(id);
-  save();audit(CU.name,id,'Faculty','Added: '+nm);
-  renderFaculty();
-  const incTab=document.querySelector('.tabs .tab[onclick*="fac-inc"]');
-  if(incTab) swTab(incTab,'fac-inc');
+  save();
+  audit(CU.name, id, 'Faculty', 'Added: ' + nm + ' (PAN: ' + panNo + ')');
+  renderFaculty('fac-inc', true);
+  const incTab = document.querySelector('.tabs .tab[onclick*="fac-inc"]');
+  if (incTab) swTab(incTab, 'fac-inc');
 }
 
 // ── WORKING STATUS & LEAVING DATE HANDLERS ──
@@ -2862,6 +2904,7 @@ async function uploadFacultyExcel(input){
 
       const iSl    = ci(['sl', 'sr', 'no']);
       const iName  = ci(['name']) >= 0 ? ci(['name']) : 1;
+      const iPan   = ci(['pan', 'pan_no', 'pan number']);
       const iAge   = ci(['age']);
       const iDesig = ci(['designation', 'desig']);
       const iGend  = ci(['gender', 'sex']);
@@ -2876,6 +2919,7 @@ async function uploadFacultyExcel(input){
       const fallbackWithAge = iAge >= 0;
       const colSl    = iSl >= 0 ? iSl : 0;
       const colName  = iName >= 0 ? iName : 1;
+      const colPan   = iPan >= 0 ? iPan : -1;
       const colAge   = iAge >= 0 ? iAge : (fallbackWithAge ? 2 : -1);
       const colDesig = iDesig >= 0 ? iDesig : (fallbackWithAge ? 3 : 2);
       const colGend  = iGend >= 0 ? iGend : (fallbackWithAge ? 4 : 3);
@@ -2894,6 +2938,10 @@ async function uploadFacultyExcel(input){
         const name=String(row[colName]||'').trim();
         if(!name||name.toLowerCase()==='name'||name.toLowerCase()==='srno'||/^(total|subtotal|grand)/i.test(name)) continue;
 
+        const dPre = (CU.deptId || 'FAC').substring(0, 3).padEnd(3, 'X').toUpperCase();
+        const numP = String(1000 + (i - dataStart + 1)).padStart(4, '0');
+        const fallbackPan = `${dPre}FA${numP.slice(-4)}P`;
+        const pan_no = (colPan >= 0 && String(row[colPan]||'').trim()) ? String(row[colPan]).trim().toUpperCase() : fallbackPan;
         const sl_no = colSl >= 0 && row[colSl] ? (parseInt(String(row[colSl]).replace(/[^\d]/g,'')) || (i - dataStart + 1)) : (i - dataStart + 1);
         const age = colAge >= 0 && row[colAge] ? (parseInt(String(row[colAge]).replace(/[^\d]/g,'')) || null) : null;
         const designation = colDesig >= 0 ? String(row[colDesig]||'').trim() : '';
@@ -2917,6 +2965,7 @@ async function uploadFacultyExcel(input){
         facultyToSave.push({
           sl_no,
           name,
+          pan_no,
           age,
           designation,
           gender,
@@ -2975,6 +3024,7 @@ function downloadFacultySample(){
   const headers=[
     'Sl. No.',
     'Name of the Faculty',
+    'PAN Number',
     'Age',
     'Designation',
     'Gender',
@@ -2987,14 +3037,14 @@ function downloadFacultySample(){
   ];
   const data=[
     headers,
-    [1,'Dr. Ramesh Kumar',45,'Professor','Male','Ph.D',192,'Yes','2018-06-15','--','Regular'],
-    [2,'Ms. Priya Sharma',34,'Assistant Professor','Female','M.Tech',84,'Yes','2021-08-01','--','Regular'],
-    [3,'Dr. Anil Deshmukh',52,'Professor','Male','Ph.D',260,'Yes','2012-07-20','--','Regular'],
-    [4,'Mr. John Peter',29,'Assistant Professor','Male','M.Tech',36,'Yes','2023-01-10','--','Regular'],
-    [5,'Dr. Sunita Rao',41,'Associate Professor','Female','Ph.D',144,'Yes','2019-09-05','--','Regular'],
-    [6,'Mr. Rajesh Verma',32,'Assistant Professor','Male','M.Tech',48,'Yes','2022-07-15','--','Regular'],
-    [7,'Dr. Kavitha C',49,'Professor','Female','Ph.D',240,'Yes','2015-01-08','--','Regular'],
-    [8,'Mr. Suresh Babu',38,'Assistant Professor','Male','M.E.',110,'Yes','2020-03-12','--','Regular']
+    [1,'Dr. Ramesh Kumar','ABCDE1234F',45,'Professor','Male','Ph.D',192,'Yes','2018-06-15','--','Regular'],
+    [2,'Ms. Priya Sharma','BCDEF2345G',34,'Assistant Professor','Female','M.Tech',84,'Yes','2021-08-01','--','Regular'],
+    [3,'Dr. Anil Deshmukh','CDEFG3456H',52,'Professor','Male','Ph.D',260,'Yes','2012-07-20','--','Regular'],
+    [4,'Mr. John Peter','DEFGH4567I',29,'Assistant Professor','Male','M.Tech',36,'Yes','2023-01-10','--','Regular'],
+    [5,'Dr. Sunita Rao','EFGHI5678J',41,'Associate Professor','Female','Ph.D',144,'Yes','2019-09-05','--','Regular'],
+    [6,'Mr. Rajesh Verma','FGHIJ6789K',32,'Assistant Professor','Male','M.Tech',48,'Yes','2022-07-15','--','Regular'],
+    [7,'Dr. Kavitha C','GHIJK7890L',49,'Professor','Female','Ph.D',240,'Yes','2015-01-08','--','Regular'],
+    [8,'Mr. Suresh Babu','HIJKL8901M',38,'Assistant Professor','Male','M.E.',110,'Yes','2020-03-12','--','Regular']
   ];
   const ws=XLSX.utils.aoa_to_sheet(data);
   const hdrRange=XLSX.utils.decode_range(ws['!ref']);
@@ -3003,7 +3053,7 @@ function downloadFacultySample(){
     if(!ws[cellRef]) continue;
     ws[cellRef].s={fill:{fgColor:{rgb:'FFFF00'}},font:{bold:true}};
   }
-  ws['!cols']=[{wch:8},{wch:26},{wch:8},{wch:22},{wch:10},{wch:16},{wch:24},{wch:34},{wch:14},{wch:14},{wch:32}];
+  ws['!cols']=[{wch:8},{wch:26},{wch:16},{wch:8},{wch:22},{wch:10},{wch:16},{wch:24},{wch:34},{wch:14},{wch:14},{wch:32}];
   XLSX.utils.book_append_sheet(wb,ws,'Faculty');
   XLSX.writeFile(wb,'Faculty_Upload_Sample.xlsx');
 }
@@ -3011,23 +3061,78 @@ function downloadFacultySample(){
 // ══════════════════════════════════════════════════
 // EXPENDITURE
 // ══════════════════════════════════════════════════
-function renderExpenditure(){
+// ══════════════════════════════════════════════════
+// EXPENDITURE (MongoDB "expenditure_data" integration)
+// ══════════════════════════════════════════════════
+
+async function fetchDepartmentExpFromDB(deptId){
+  if(!deptId) return null;
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') 
+      ? '' 
+      : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/expenditure/${deptId}?_t=${Date.now()}`, { cache: 'no-cache' });
+    if(!res.ok) return null;
+    const json = await res.json();
+    if(json.success && json.data){
+      if(!S.exp) S.exp = {};
+      S.exp[deptId] = {
+        capex: json.data.capex || {},
+        opex: json.data.opex || {}
+      };
+      return S.exp[deptId];
+    }
+  } catch(e){
+    // Network fallback
+  }
+  return null;
+}
+
+async function fetchAllDepartmentsExpFromDB(){
+  try {
+    await Promise.all(DEPTS.map(d => fetchDepartmentExpFromDB(d.id)));
+  } catch(e){}
+}
+
+function renderExpenditure(skipFetch){
   const id=CU.deptId;const dept=DEPTS.find(d=>d.id===id);
   document.getElementById('tb-title').textContent='Expenditure — '+dept.short;
-  const exp=S.exp[id];
+  
+  if(!S.exp) S.exp = {};
+  if(!S.exp[id]) S.exp[id] = { capex: {}, opex: {} };
+  const exp = S.exp[id];
+
   const capKeys=[['library','Library (Books, Journals, e-Resources only)'],['equipment','New Equipment & Software for Labs'],['workshop','Engineering Workshops'],['other_cap','Other Capital Asset Creation']];
   const opKeys=[['salaries','Salaries (Teaching & Non-Teaching Staff)'],['maintenance','Maintenance / Academic Infra / Consumables'],['seminars','Seminars / Conferences / Workshops']];
+
   function mkRow(keys,type,data){
     return keys.map(([k,lbl])=>`<tr><td><b>${lbl}</b></td>
-      ${cyc().EXP_YRS.map(y=>`<td><input type="number" class="inp" id="${type}-${k}-${y.replace('-','_')}" value="${data?.[k]?.[y]||0}" min="0" onchange="saveExp()" style="width:130px"></td>`).join('')}
+      ${cyc().EXP_YRS.map(y=>`<td><input type="number" class="inp" id="${type}-${k}-${y.replace('-','_')}" value="${data?.[k]?.[y]||0}" min="0" oninput="updateExpTotals()" style="width:130px"></td>`).join('')}
       <td id="${type}-${k}-tot" style="font-weight:700;color:var(--navy)">—</td></tr>`).join('');
   }
+
+  // Fetch fresh expenditure data asynchronously from MongoDB database "expenditure_data"
+  if(!skipFetch){
+    fetchDepartmentExpFromDB(id).then(records => {
+      if(records && CURRENT_PAGE === 'expenditure'){
+        renderExpenditure(true);
+      }
+    });
+  }
+
   document.getElementById('mc').innerHTML=`
     <div class="bc">Dashboard <span>›</span> TLR <span>›</span> Expenditure</div>
-    <div class="stitle">Financial Resources / Expenditure (FRU)</div>
-    <div class="ssub">3-year expenditure data. All amounts in INR (₹). FRU computed via NIRF reference table nearest-neighbour lookup.</div>
+    <div class="stitle">Financial Resources / Expenditure (FRU) — Department: ${id}</div>
+    <div class="ssub">3-year financial expenditure data saved directly to MongoDB database "<code>${id}</code>" in "<code>expenditure_data</code>". All amounts in INR (₹).</div>
+    
     <div class="card mb4">
-      <div class="ch"><h3>Capital Expenditure (BC)</h3><div class="flex gap2"><button class="btn btn-out btn-sm" onclick="alert('Upload .xlsx: Column A=Category, B-D=Year amounts')">⬆ Excel</button><button class="btn btn-red btn-sm" onclick="clearExpData()">🗑 Clear Data</button></div></div>
+      <div class="ch">
+        <h3>Capital Expenditure (BC)</h3>
+        <div class="flex gap2">
+          <button class="btn btn-out btn-sm" onclick="alert('Upload .xlsx: Column A=Category, B-D=Year amounts')">⬆ Excel</button>
+          <button class="btn btn-red btn-sm" onclick="clearExpData()">🗑 Clear Data</button>
+        </div>
+      </div>
       <div class="tw"><table>
         <thead><tr><th>Category</th>${cyc().EXP_YRS.map(y=>`<th>${y}</th>`).join('')}<th>3yr Total</th></tr></thead>
         <tbody>
@@ -3038,6 +3143,7 @@ function renderExpenditure(){
         </tbody>
       </table></div>
     </div>
+    
     <div class="card mb4">
       <div class="ch"><h3>Operational Expenditure (BO)</h3></div>
       <div class="tw"><table>
@@ -3050,19 +3156,108 @@ function renderExpenditure(){
         </tbody>
       </table></div>
     </div>
-    <div class="card"><div class="ch"><h3>FRU Score Calculation</h3></div><div class="cb" id="fru-res"></div></div>`;
+
+    <div style="display:flex;gap:12px;margin-bottom:20px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-pri" onclick="calcExpPreview()">🧮 Calculate FRU Score →</button>
+      <button class="btn btn-green" id="btn-save-exp" onclick="saveExpenditureToDB()">💾 Save Expenditure</button>
+      <span id="exp-save-status-msg" style="font-size:12px;font-weight:600"></span>
+    </div>
+
+    <div class="card"><div class="ch"><h3>FRU Score Calculation Breakdown</h3></div><div class="cb" id="fru-res"></div></div>`;
   updateExpTotals();
 }
 
-function saveExp(){
+function saveExp(skipLocalSave){
   const id=CU.deptId;
-  if(!S.exp[id]) S.exp[id]=genExp();
+  if(!S.exp) S.exp = {};
+  if(!S.exp[id]) S.exp[id] = { capex: {}, opex: {} };
   const capKeys=['library','equipment','workshop','other_cap'];
   const opKeys=['salaries','maintenance','seminars'];
-  capKeys.forEach(k=>cyc().EXP_YRS.forEach(y=>{const el=document.getElementById(`cap-${k}-${y.replace('-','_')}`);if(el)S.exp[id].capex[k][y]=Number(el.value)||0}));
-  opKeys.forEach(k=>cyc().EXP_YRS.forEach(y=>{const el=document.getElementById(`op-${k}-${y.replace('-','_')}`);if(el)S.exp[id].opex[k][y]=Number(el.value)||0}));
-  save();audit(CU.name,id,'Expenditure','Data updated');
+
+  if(!S.exp[id].capex) S.exp[id].capex = {};
+  if(!S.exp[id].opex) S.exp[id].opex = {};
+
+  capKeys.forEach(k => {
+    if(!S.exp[id].capex[k]) S.exp[id].capex[k] = {};
+    cyc().EXP_YRS.forEach(y => {
+      const el = document.getElementById(`cap-${k}-${y.replace('-','_')}`);
+      if(el) S.exp[id].capex[k][y] = Number(el.value) || 0;
+    });
+  });
+
+  opKeys.forEach(k => {
+    if(!S.exp[id].opex[k]) S.exp[id].opex[k] = {};
+    cyc().EXP_YRS.forEach(y => {
+      const el = document.getElementById(`op-${k}-${y.replace('-','_')}`);
+      if(el) S.exp[id].opex[k][y] = Number(el.value) || 0;
+    });
+  });
+
   updateExpTotals();
+}
+
+function calcExpPreview(){
+  saveExp(true);
+  updateExpTotals();
+  const statusEl = document.getElementById('exp-save-status-msg');
+  if(statusEl){
+    statusEl.style.color = 'var(--blue)';
+    statusEl.textContent = '✓ FRU Score calculated successfully!';
+    setTimeout(() => { if(statusEl.textContent.includes('calculated')) statusEl.textContent = ''; }, 3000);
+  }
+  const fruBox = document.getElementById('fru-res');
+  if(fruBox){
+    fruBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+async function saveExpenditureToDB(){
+  const id = CU.deptId;
+  const btn = document.getElementById('btn-save-exp');
+  const statusEl = document.getElementById('exp-save-status-msg');
+
+  if(btn){
+    btn.disabled = true;
+    btn.textContent = '⏳ Saving...';
+  }
+  if(statusEl){
+    statusEl.style.color = 'var(--blue)';
+    statusEl.textContent = 'Saving expenditure data to MongoDB...';
+  }
+
+  saveExp(true);
+  const expData = S.exp[id] || { capex: {}, opex: {} };
+
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/expenditure/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(expData)
+    });
+    const json = await res.json();
+
+    if(!res.ok || !json.success){
+      throw new Error(json.message || 'Save failed');
+    }
+
+    if(statusEl){
+      statusEl.style.color = 'var(--green)';
+      statusEl.textContent = '✓ Saved expenditure data to MongoDB database!';
+    }
+    audit(CU.name, id, 'Expenditure', 'Saved expenditure data directly to MongoDB database');
+  } catch(err){
+    console.error('Failed to save expenditure to MongoDB:', err);
+    if(statusEl){
+      statusEl.style.color = 'var(--red)';
+      statusEl.textContent = `❌ Save failed: ${err.message}`;
+    }
+  } finally {
+    if(btn){
+      btn.disabled = false;
+      btn.textContent = '💾 Save Expenditure';
+    }
+  }
 }
 
 function updateExpTotals(){
@@ -3070,16 +3265,49 @@ function updateExpTotals(){
   const capKeys=['library','equipment','workshop','other_cap'];
   const opKeys=['salaries','maintenance','seminars'];
   let BCt=0,BOt=0;
+
   cyc().EXP_YRS.forEach(y=>{
     const k=y.replace('-','_');
     let cs=0,os=0;
-    capKeys.forEach(ck=>{cs+=Number(document.getElementById(`cap-${ck}-${k}`)?.value||0)});
-    opKeys.forEach(ok=>{os+=Number(document.getElementById(`op-${ok}-${k}`)?.value||0)});
+
+    capKeys.forEach(ck=>{
+      const val = Number(document.getElementById(`cap-${ck}-${k}`)?.value||0);
+      cs += val;
+    });
+
+    opKeys.forEach(ok=>{
+      const val = Number(document.getElementById(`op-${ok}-${k}`)?.value||0);
+      os += val;
+    });
+
     const ce=document.getElementById(`cap-tot-${k}`);const oe=document.getElementById(`op-tot-${k}`);
     if(ce)ce.textContent='₹'+cs.toLocaleString('en-IN');
     if(oe)oe.textContent='₹'+os.toLocaleString('en-IN');
     BCt+=cs;BOt+=os;
   });
+
+  // Update row 3-year totals for each capex category
+  capKeys.forEach(ck => {
+    let rTot = 0;
+    cyc().EXP_YRS.forEach(y => {
+      const k = y.replace('-', '_');
+      rTot += Number(document.getElementById(`cap-${ck}-${k}`)?.value||0);
+    });
+    const rTotEl = document.getElementById(`cap-${ck}-tot`);
+    if(rTotEl) rTotEl.textContent = '₹' + rTot.toLocaleString('en-IN');
+  });
+
+  // Update row 3-year totals for each opex category
+  opKeys.forEach(ok => {
+    let rTot = 0;
+    cyc().EXP_YRS.forEach(y => {
+      const k = y.replace('-', '_');
+      rTot += Number(document.getElementById(`op-${ok}-${k}`)?.value||0);
+    });
+    const rTotEl = document.getElementById(`op-${ok}-tot`);
+    if(rTotEl) rTotEl.textContent = '₹' + rTot.toLocaleString('en-IN');
+  });
+
   const gcap=document.getElementById('cap-grand');const gop=document.getElementById('op-grand');
   if(gcap)gcap.textContent='₹'+BCt.toLocaleString('en-IN');
   if(gop)gop.textContent='₹'+BOt.toLocaleString('en-IN');
@@ -4836,6 +5064,1399 @@ function renderIPRDeptPage(){
 }
 
 // ══════════════════════════════════════════════════
+// CONSULTANCY — MongoDB "consultancy_data" integration
+// ══════════════════════════════════════════════════
+
+async function fetchDepartmentConsultancyFromDB(deptId){
+  if(!deptId) return null;
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000')
+      ? ''
+      : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/consultancy/${deptId}?_t=${Date.now()}`, { cache: 'no-cache' });
+    if(!res.ok) return null;
+    const json = await res.json();
+    if(json.success && Array.isArray(json.data)){
+      if(!window.CONSULTANCY_CACHE) window.CONSULTANCY_CACHE = {};
+      window.CONSULTANCY_CACHE[deptId] = json.data;
+      if(!S.consultancy) S.consultancy = {};
+      S.consultancy[deptId] = json.data;
+      return json.data;
+    }
+  } catch(e){
+    console.warn('Consultancy fetch from DB warning:', e);
+  }
+  return null;
+}
+
+function downloadConsultancySample(){
+  const sampleData = [
+    {
+      'Sl.No.': 1,
+      'Name of the Faculty': 'Dr. Chitra K',
+      'Name of Funding Agency': 'ABC Technologies Pvt. Ltd.',
+      'Amount Received': 75000,
+      'Title of the Project': 'AI-based Predictive Maintenance System',
+      'Month and Year (MMYY)': '0124',
+      'Total no. of Consultancy Projects': 2,
+      'Total no. of Client Organizations': 1,
+      'Proof of Documents': 'https://dsatm.edu.in/proof/consultancy_001.pdf'
+    },
+    {
+      'Sl.No.': 2,
+      'Name of the Faculty': 'Dr. Ravi Kumar S',
+      'Name of Funding Agency': 'XYZ Solutions',
+      'Amount Received': 120000,
+      'Title of the Project': 'Smart Energy Monitoring Dashboard',
+      'Month and Year (MMYY)': '0324',
+      'Total no. of Consultancy Projects': 1,
+      'Total no. of Client Organizations': 1,
+      'Proof of Documents': 'https://dsatm.edu.in/proof/consultancy_002.pdf'
+    }
+  ];
+  const ws = XLSX.utils.json_to_sheet(sampleData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Consultancy_Sample');
+  XLSX.writeFile(wb, 'DSATM_Consultancy_Sample.xlsx');
+}
+
+async function uploadConsultancyExcel(inputEl, deptId){
+  const file = inputEl.files && inputEl.files[0];
+  if(!file) return;
+  const statusEl = document.getElementById('cons-xl-status');
+  if(statusEl) statusEl.innerHTML = '<span style="color:var(--blue);font-weight:700">⏳ Reading Excel file and running ETL pipeline...</span>';
+
+  const reader = new FileReader();
+  reader.onload = async function(e){
+    try {
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+      if(!rawRows || rawRows.length === 0){
+        if(statusEl) statusEl.innerHTML = '<span style="color:var(--red);font-weight:700">⚠️ No data rows found in uploaded Excel sheet</span>';
+        return;
+      }
+
+      const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+      const res = await fetch(`${apiBase}/api/consultancy/${deptId}/etl-pipeline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: rawRows, mode: 'replace' })
+      });
+      const resJson = await res.json();
+      if(res.ok && resJson.success){
+        if(!window.CONSULTANCY_CACHE) window.CONSULTANCY_CACHE = {};
+        window.CONSULTANCY_CACHE[deptId] = resJson.data;
+        if(!S.consultancy) S.consultancy = {};
+        S.consultancy[deptId] = resJson.data;
+
+        if(statusEl){
+          statusEl.innerHTML = `<span style="color:var(--green);font-weight:700">✅ ETL Success: Saved ${resJson.importedCount} consultancy records to MongoDB database "consultancy_data" (table: ${deptId})!</span>`;
+        }
+
+        setTimeout(() => {
+          if(CURRENT_PAGE === 'rpc-dept'){
+            const container = document.getElementById('rpc-consultancy');
+            if(container) container.innerHTML = renderConsultancyBlock(deptId);
+          }
+        }, 800);
+      } else {
+        if(statusEl) statusEl.innerHTML = `<span style="color:var(--red);font-weight:700">⚠️ ETL Upload failed: ${resJson.message || 'Unknown error'}</span>`;
+      }
+    } catch(err){
+      if(statusEl) statusEl.innerHTML = `<span style="color:var(--red);font-weight:700">⚠️ Error parsing Excel: ${err.message}</span>`;
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function addManualConsultancy(deptId){
+  const facultyName = document.getElementById('cons-faculty-name')?.value?.trim();
+  const fundingAgency = document.getElementById('cons-funding-agency')?.value?.trim() || '';
+  const amountReceived = Number(document.getElementById('cons-amount-received')?.value || 0);
+  const projectTitle = document.getElementById('cons-project-title')?.value?.trim() || '';
+  const monthYear = document.getElementById('cons-month-year')?.value?.trim() || '';
+  const totalProjects = Number(document.getElementById('cons-total-projects')?.value || 0);
+  const totalClientOrgs = Number(document.getElementById('cons-total-client-orgs')?.value || 0);
+  const proofDocument = document.getElementById('cons-proof-document')?.value?.trim() || '';
+  const statusEl = document.getElementById('cons-manual-status');
+
+  if(!facultyName){
+    if(statusEl) statusEl.innerHTML = '<span style="color:var(--red);font-weight:700;font-size:12px">⚠️ Please enter the Faculty Name</span>';
+    return;
+  }
+
+  if(!window.CONSULTANCY_CACHE) window.CONSULTANCY_CACHE = {};
+  const currentList = window.CONSULTANCY_CACHE[deptId] || (S.consultancy && S.consultancy[deptId]) || [];
+  const nextSl = currentList.length + 1;
+
+  const newRecord = {
+    sl_no: nextSl,
+    faculty_name: facultyName,
+    funding_agency: fundingAgency,
+    amount_received: amountReceived,
+    project_title: projectTitle,
+    month_year: monthYear,
+    total_projects: totalProjects,
+    total_client_orgs: totalClientOrgs,
+    proof_document: proofDocument
+  };
+
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/consultancy/${deptId}/row`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newRecord)
+    });
+    const resJson = await res.json();
+    if(res.ok && resJson.success){
+      window.CONSULTANCY_CACHE[deptId] = resJson.data;
+      if(!S.consultancy) S.consultancy = {};
+      S.consultancy[deptId] = resJson.data;
+
+      if(statusEl){
+        statusEl.innerHTML = '<span style="color:var(--green);font-weight:700;font-size:12px">✅ Saved to MongoDB database "consultancy_data" (table: ' + deptId + ')!</span>';
+        setTimeout(() => { if(statusEl) statusEl.innerHTML = ''; }, 3000);
+      }
+
+      ['cons-faculty-name','cons-funding-agency','cons-amount-received','cons-project-title','cons-month-year','cons-total-projects','cons-total-client-orgs','cons-proof-document'].forEach(id => {
+        const el = document.getElementById(id);
+        if(el) el.value = '';
+      });
+
+      if(CURRENT_PAGE === 'rpc-dept'){
+        const container = document.getElementById('rpc-consultancy');
+        if(container) container.innerHTML = renderConsultancyBlock(deptId);
+      }
+    } else {
+      if(statusEl) statusEl.innerHTML = `<span style="color:var(--red);font-weight:700;font-size:12px">⚠️ ${resJson.message || 'Failed to save'}</span>`;
+    }
+  } catch(e){
+    if(statusEl) statusEl.innerHTML = '<span style="color:var(--red);font-weight:700;font-size:12px">⚠️ Failed to save consultancy record to DB</span>';
+  }
+}
+
+async function saveAllConsultancy(deptId){
+  if(!window.CONSULTANCY_CACHE) window.CONSULTANCY_CACHE = {};
+  const currentList = window.CONSULTANCY_CACHE[deptId] || (S.consultancy && S.consultancy[deptId]) || [];
+
+  currentList.forEach(r => {
+    const sl = r.sl_no;
+    const fnEl = document.getElementById(`cons-row-faculty-${sl}`);
+    if(fnEl) r.faculty_name = fnEl.value.trim();
+    const faEl = document.getElementById(`cons-row-agency-${sl}`);
+    if(faEl) r.funding_agency = faEl.value.trim();
+    const amEl = document.getElementById(`cons-row-amount-${sl}`);
+    if(amEl) r.amount_received = Number(amEl.value) || 0;
+    const ptEl = document.getElementById(`cons-row-title-${sl}`);
+    if(ptEl) r.project_title = ptEl.value.trim();
+    const myEl = document.getElementById(`cons-row-month-${sl}`);
+    if(myEl) r.month_year = myEl.value.trim();
+    const tpEl = document.getElementById(`cons-row-tproj-${sl}`);
+    if(tpEl) r.total_projects = Number(tpEl.value) || 0;
+    const tcEl = document.getElementById(`cons-row-tclient-${sl}`);
+    if(tcEl) r.total_client_orgs = Number(tcEl.value) || 0;
+    const pdEl = document.getElementById(`cons-row-proof-${sl}`);
+    if(pdEl) r.proof_document = pdEl.value.trim();
+  });
+
+  const statusEl = document.getElementById('cons-table-save-status');
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/consultancy/${deptId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ records: currentList })
+    });
+    const resJson = await res.json();
+    if(res.ok && resJson.success){
+      window.CONSULTANCY_CACHE[deptId] = resJson.data;
+      if(!S.consultancy) S.consultancy = {};
+      S.consultancy[deptId] = resJson.data;
+
+      if(statusEl){
+        statusEl.innerHTML = `<span style="color:var(--green);font-size:12px;font-weight:700">✅ Saved ${currentList.length} consultancy records to MongoDB database "consultancy_data" (table: ${deptId})!</span>`;
+        setTimeout(() => { if(statusEl) statusEl.innerHTML = ''; }, 3500);
+      }
+    }
+  } catch(e){
+    if(statusEl) statusEl.innerHTML = `<span style="color:var(--red);font-size:12px;font-weight:700">⚠️ Error saving: ${e.message}</span>`;
+  }
+}
+
+async function deleteConsultancyRow(deptId, slNo){
+  if(!confirm(`Delete consultancy record #${slNo}?`)) return;
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/consultancy/${deptId}/row/${slNo}`, { method: 'DELETE' });
+    const resJson = await res.json();
+    if(res.ok && resJson.success){
+      if(!window.CONSULTANCY_CACHE) window.CONSULTANCY_CACHE = {};
+      window.CONSULTANCY_CACHE[deptId] = resJson.data;
+      if(!S.consultancy) S.consultancy = {};
+      S.consultancy[deptId] = resJson.data;
+
+      if(CURRENT_PAGE === 'rpc-dept'){
+        const container = document.getElementById('rpc-consultancy');
+        if(container) container.innerHTML = renderConsultancyBlock(deptId);
+      }
+    }
+  } catch(e){}
+}
+
+async function clearDepartmentConsultancy(deptId){
+  if(!confirm(`Clear ALL consultancy records for department "${deptId}"? This cannot be undone.`)) return;
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    await fetch(`${apiBase}/api/consultancy/${deptId}`, { method: 'DELETE' });
+    if(!window.CONSULTANCY_CACHE) window.CONSULTANCY_CACHE = {};
+    window.CONSULTANCY_CACHE[deptId] = [];
+    if(!S.consultancy) S.consultancy = {};
+    S.consultancy[deptId] = [];
+    if(CURRENT_PAGE === 'rpc-dept'){
+      const container = document.getElementById('rpc-consultancy');
+      if(container) container.innerHTML = renderConsultancyBlock(deptId);
+    }
+  } catch(e){}
+}
+
+function exportConsultancyToExcel(deptId){
+  const list = (window.CONSULTANCY_CACHE && window.CONSULTANCY_CACHE[deptId]) || (S.consultancy && S.consultancy[deptId]) || [];
+  if(list.length === 0){ alert('No consultancy records to export for this department.'); return; }
+  const exportData = list.map(r => ({
+    'Sl.No.': r.sl_no,
+    'Name of the Faculty': r.faculty_name,
+    'Name of Funding Agency': r.funding_agency,
+    'Amount Received': r.amount_received,
+    'Title of the Project': r.project_title,
+    'Month and Year (MMYY)': r.month_year,
+    'Total no. of Consultancy Projects': r.total_projects,
+    'Total no. of Client Organizations': r.total_client_orgs,
+    'Proof of Documents': r.proof_document
+  }));
+  const ws = XLSX.utils.json_to_sheet(exportData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Consultancy');
+  XLSX.writeFile(wb, `DSATM_${deptId}_Consultancy_${Date.now()}.xlsx`);
+}
+
+function updateConsultancyMemoryField(deptId, slNo, field, val){
+  if(!window.CONSULTANCY_CACHE) window.CONSULTANCY_CACHE = {};
+  const list = window.CONSULTANCY_CACHE[deptId] || (S.consultancy && S.consultancy[deptId]);
+  if(!list) return;
+  const item = list.find(r => r.sl_no === slNo);
+  if(item) item[field] = (field === 'amount_received' || field === 'total_projects' || field === 'total_client_orgs') ? Number(val) || 0 : String(val).trim();
+  // Auto-save to DB on field change
+  const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+  fetch(`${apiBase}/api/consultancy/${deptId}/row`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(item)
+  }).catch(() => {});
+}
+
+// Helper: extract year string from MMYY (e.g. "0124" → "2024")
+function consGetYear(mmyy){
+  const s = String(mmyy || '').trim();
+  if(s.length === 4){
+    const yy = s.slice(2);
+    return '20' + yy;
+  }
+  return '';
+}
+
+function renderConsultancyTableRows(records, deptId){
+  if(!records || records.length === 0){
+    return `<tr><td colspan="10" style="text-align:center;padding:32px 20px;color:var(--g500);font-size:13px">
+      <div style="font-size:26px;margin-bottom:6px">🤝</div>
+      <b>No consultancy records match the current filters.</b><br>
+      <span style="font-size:12px;color:var(--g400)">Try clearing filters or add records via Excel Upload / Manual Entry.</span>
+    </td></tr>`;
+  }
+
+  return records.map((r, i) => {
+    const sl = r.sl_no || (i + 1);
+    const proofClean = String(r.proof_document || '').trim();
+    const proofHref = proofClean ? (proofClean.startsWith('http') ? proofClean : `https://${proofClean}`) : '';
+    return `
+      <tr id="cons-row-${sl}">
+        <td style="text-align:center;font-weight:700;color:var(--navy)">${sl}</td>
+        <td><input type="text" class="inp" id="cons-row-faculty-${sl}" value="${(r.faculty_name||'').replace(/"/g,'&quot;')}" style="min-width:160px;font-weight:700" onchange="updateConsultancyMemoryField('${deptId}',${sl},'faculty_name',this.value)"></td>
+        <td><input type="text" class="inp" id="cons-row-agency-${sl}" value="${(r.funding_agency||'').replace(/"/g,'&quot;')}" style="min-width:160px" onchange="updateConsultancyMemoryField('${deptId}',${sl},'funding_agency',this.value)"></td>
+        <td><input type="number" class="inp" id="cons-row-amount-${sl}" value="${r.amount_received||0}" min="0" style="min-width:110px;text-align:right" onchange="updateConsultancyMemoryField('${deptId}',${sl},'amount_received',this.value)"></td>
+        <td><input type="text" class="inp" id="cons-row-title-${sl}" value="${(r.project_title||'').replace(/"/g,'&quot;')}" style="min-width:220px" onchange="updateConsultancyMemoryField('${deptId}',${sl},'project_title',this.value)"></td>
+        <td><input type="text" class="inp" id="cons-row-month-${sl}" value="${(r.month_year||'').replace(/"/g,'&quot;')}" style="width:80px;text-align:center;font-family:monospace" placeholder="MMYY" onchange="updateConsultancyMemoryField('${deptId}',${sl},'month_year',this.value)"></td>
+        <td><input type="number" class="inp" id="cons-row-tproj-${sl}" value="${r.total_projects||0}" min="0" style="width:70px;text-align:center" onchange="updateConsultancyMemoryField('${deptId}',${sl},'total_projects',this.value)"></td>
+        <td><input type="number" class="inp" id="cons-row-tclient-${sl}" value="${r.total_client_orgs||0}" min="0" style="width:70px;text-align:center" onchange="updateConsultancyMemoryField('${deptId}',${sl},'total_client_orgs',this.value)"></td>
+        <td>
+          <div style="display:flex;align-items:center;gap:4px">
+            <input type="text" class="inp" id="cons-row-proof-${sl}" value="${proofClean.replace(/"/g,'&quot;')}" style="min-width:150px;font-size:11px" placeholder="https://..." onchange="updateConsultancyMemoryField('${deptId}',${sl},'proof_document',this.value)">
+            ${proofHref ? `<a href="${proofHref}" target="_blank" rel="noopener noreferrer" class="btn btn-out btn-sm" style="padding:4px 7px" title="Open proof document">🔗</a>` : ''}
+          </div>
+        </td>
+        <td style="text-align:center">
+          <button class="btn btn-red btn-sm" onclick="deleteConsultancyRow('${deptId}',${sl})" title="Delete row" style="padding:4px 8px">🗑</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function selectConsultancyFilter(deptId, filterType, val){
+  if(!window.consultancyFilters) window.consultancyFilters = {};
+  if(!window.consultancyFilters[deptId]) window.consultancyFilters[deptId] = { year: '', faculty: '' };
+  window.consultancyFilters[deptId][filterType] = val;
+  document.querySelectorAll('.pub-dropdown-menu').forEach(m => m.style.display = 'none');
+  applyConsultancyFilters(deptId);
+}
+
+function clearAllConsultancyFilters(deptId){
+  if(!window.consultancyFilters) window.consultancyFilters = {};
+  window.consultancyFilters[deptId] = { year: '', faculty: '' };
+  document.querySelectorAll('.pub-dropdown-menu').forEach(m => m.style.display = 'none');
+  applyConsultancyFilters(deptId);
+}
+
+function updateConsultancyFilterDropdownOptions(deptId){
+  if(!window.consultancyFilters) window.consultancyFilters = {};
+  if(!window.consultancyFilters[deptId]) window.consultancyFilters[deptId] = { year: '', faculty: '' };
+  const curYear = window.consultancyFilters[deptId].year || '';
+  const curFaculty = window.consultancyFilters[deptId].faculty || '';
+
+  const all = (window.CONSULTANCY_CACHE && window.CONSULTANCY_CACHE[deptId]) || (S.consultancy && S.consultancy[deptId]) || [];
+
+  // Build year counts from MMYY
+  const yearCounts = {};
+  all.forEach(r => {
+    const y = consGetYear(r.month_year);
+    if(y) yearCounts[y] = (yearCounts[y] || 0) + 1;
+  });
+  const distinctYears = Object.keys(yearCounts).sort().reverse();
+
+  // Build faculty counts
+  const facultyCounts = {};
+  all.forEach(r => {
+    const f = (r.faculty_name || '').trim();
+    if(f) facultyCounts[f] = (facultyCounts[f] || 0) + 1;
+  });
+  const distinctFaculty = Object.keys(facultyCounts).sort();
+
+  const yMenu = document.getElementById('cons-menu-year');
+  if(yMenu){
+    yMenu.innerHTML = `
+      <div class="pub-drop-item ${!curYear?'active':''}" onclick="selectConsultancyFilter('${deptId}','year','')">
+        <span>All Years</span><span class="badge b-pend">${all.length}</span>
+      </div>
+      ${distinctYears.map(y => `
+        <div class="pub-drop-item ${curYear===y?'active':''}" onclick="selectConsultancyFilter('${deptId}','year','${y}')">
+          <span>${y}</span><span class="badge b-info">${yearCounts[y]}</span>
+        </div>
+      `).join('')}
+    `;
+  }
+
+  const fMenu = document.getElementById('cons-menu-faculty');
+  if(fMenu){
+    fMenu.innerHTML = `
+      <div class="pub-drop-item ${!curFaculty?'active':''}" onclick="selectConsultancyFilter('${deptId}','faculty','')">
+        <span>All Faculty</span><span class="badge b-pend">${all.length}</span>
+      </div>
+      ${distinctFaculty.map(f => `
+        <div class="pub-drop-item ${curFaculty===f?'active':''}" onclick="selectConsultancyFilter('${deptId}','faculty','${f.replace(/'/g,"\\'")}')">
+          <span>${f}</span><span class="badge b-info">${facultyCounts[f]}</span>
+        </div>
+      `).join('')}
+    `;
+  }
+}
+
+function applyConsultancyFilters(deptId){
+  if(!window.consultancyFilters) window.consultancyFilters = {};
+  if(!window.consultancyFilters[deptId]) window.consultancyFilters[deptId] = { year: '', faculty: '' };
+  const curYear = window.consultancyFilters[deptId].year || '';
+  const curFaculty = window.consultancyFilters[deptId].faculty || '';
+  const all = (window.CONSULTANCY_CACHE && window.CONSULTANCY_CACHE[deptId]) || (S.consultancy && S.consultancy[deptId]) || [];
+
+  const filtered = all.filter(r => {
+    const yMatch = !curYear || consGetYear(r.month_year) === curYear;
+    const fMatch = !curFaculty || (r.faculty_name || '').trim() === curFaculty;
+    return yMatch && fMatch;
+  });
+
+  // Update Year button
+  const yBtnLbl = document.getElementById('cons-btn-year-lbl');
+  if(yBtnLbl) yBtnLbl.textContent = curYear || 'All Years';
+  const yBtn = document.getElementById('cons-btn-year');
+  if(yBtn){
+    yBtn.style.background = curYear ? '#eff6ff' : '#fff';
+    yBtn.style.borderColor = curYear ? 'var(--blue)' : 'var(--g300)';
+    yBtn.style.color = curYear ? 'var(--blue)' : 'var(--g700)';
+  }
+
+  // Update Faculty button
+  const fBtnLbl = document.getElementById('cons-btn-faculty-lbl');
+  if(fBtnLbl) fBtnLbl.textContent = curFaculty || 'All Faculty';
+  const fBtn = document.getElementById('cons-btn-faculty');
+  if(fBtn){
+    fBtn.style.background = curFaculty ? '#eff6ff' : '#fff';
+    fBtn.style.borderColor = curFaculty ? 'var(--blue)' : 'var(--g300)';
+    fBtn.style.color = curFaculty ? 'var(--blue)' : 'var(--g700)';
+  }
+
+  // Update Clear button visibility
+  const clearBtn = document.getElementById('cons-btn-clear');
+  if(clearBtn) clearBtn.style.display = (curYear || curFaculty) ? 'inline-flex' : 'none';
+
+  // Update count badge
+  const countBadge = document.getElementById('cons-filter-count-badge');
+  if(countBadge){
+    countBadge.innerHTML = (curYear || curFaculty)
+      ? `Showing <b style="color:var(--navy)">${filtered.length}</b> of <b>${all.length}</b> records`
+      : `Showing all <b style="color:var(--navy)">${all.length}</b> records`;
+  }
+
+  // Update header badge
+  const hdrBadge = document.getElementById('cons-badge-count');
+  if(hdrBadge){
+    hdrBadge.textContent = (curYear || curFaculty)
+      ? `${filtered.length} of ${all.length} Records (Filtered)`
+      : `${all.length} Records`;
+    hdrBadge.className = 'badge ' + ((curYear || curFaculty) ? 'b-info' : 'b-done');
+  }
+
+  // Re-render only the tbody
+  const tbody = document.getElementById('cons-table-body');
+  if(tbody) tbody.innerHTML = renderConsultancyTableRows(filtered, deptId);
+
+  // Refresh dropdown option highlights
+  updateConsultancyFilterDropdownOptions(deptId);
+}
+
+function renderConsultancyBlock(deptId){
+  if(!window.CONSULTANCY_CACHE) window.CONSULTANCY_CACHE = {};
+  if(!window.CONSULTANCY_CACHE[deptId]){
+    fetchDepartmentConsultancyFromDB(deptId).then(data => {
+      if(data && CURRENT_PAGE === 'rpc-dept'){
+        const container = document.getElementById('rpc-consultancy');
+        if(container) container.innerHTML = renderConsultancyBlock(deptId);
+      }
+    });
+  }
+
+  // Init filter state
+  if(!window.consultancyFilters) window.consultancyFilters = {};
+  if(!window.consultancyFilters[deptId]) window.consultancyFilters[deptId] = { year: '', faculty: '' };
+  const curYear = window.consultancyFilters[deptId].year || '';
+  const curFaculty = window.consultancyFilters[deptId].faculty || '';
+
+  const all = window.CONSULTANCY_CACHE[deptId] || (S.consultancy && S.consultancy[deptId]) || [];
+
+  // Compute filter dropdown values from live data
+  const yearCounts = {};
+  all.forEach(r => {
+    const y = consGetYear(r.month_year);
+    if(y) yearCounts[y] = (yearCounts[y] || 0) + 1;
+  });
+  const distinctYears = Object.keys(yearCounts).sort().reverse();
+
+  const facultyCounts = {};
+  all.forEach(r => {
+    const f = (r.faculty_name || '').trim();
+    if(f) facultyCounts[f] = (facultyCounts[f] || 0) + 1;
+  });
+  const distinctFaculty = Object.keys(facultyCounts).sort();
+
+  // Apply current filters for table
+  const filtered = all.filter(r => {
+    const yMatch = !curYear || consGetYear(r.month_year) === curYear;
+    const fMatch = !curFaculty || (r.faculty_name || '').trim() === curFaculty;
+    return yMatch && fMatch;
+  });
+
+  const totalProjects = all.reduce((a,r) => a + Number(r.total_projects||0), 0);
+  const totalClientOrgs = all.reduce((a,r) => a + Number(r.total_client_orgs||0), 0);
+  const totalAmount = all.reduce((a,r) => a + Number(r.amount_received||0), 0);
+
+  return `
+    <!-- KPI Summary Cards -->
+    <div class="mcg" style="margin-bottom:18px">
+      <div class="mc grn">
+        <div class="mlbl">Total Consultancy Records</div>
+        <div class="mval">${all.length}</div>
+        <div class="msub">Faculty entries in DB</div>
+      </div>
+      <div class="mc nvy">
+        <div class="mlbl">Total Projects</div>
+        <div class="mval">${totalProjects}</div>
+        <div class="msub">Aggregate across faculty</div>
+      </div>
+      <div class="mc tel">
+        <div class="mlbl">Total Client Organizations</div>
+        <div class="mval">${totalClientOrgs}</div>
+        <div class="msub">Distinct client orgs</div>
+      </div>
+      <div class="mc ppl">
+        <div class="mlbl">Total Amount Received (₹)</div>
+        <div class="mval" style="font-size:18px">₹${totalAmount.toLocaleString('en-IN')}</div>
+        <div class="msub">Sum across all consultancy</div>
+      </div>
+    </div>
+
+    <!-- Upload + Manual Entry Side-by-Side -->
+    <div class="g2 mb4">
+      <!-- Method 1: Excel ETL Upload -->
+      <div class="card">
+        <div class="ch">
+          <h3>Method 1 — Excel Upload (ETL Pipeline)</h3>
+          <button class="btn btn-out btn-sm" onclick="downloadConsultancySample()">⬇ Sample Excel</button>
+        </div>
+        <div class="cb">
+          <div class="alt alt-i" style="margin-bottom:12px;font-size:11.5px;word-break:break-word">
+            <b>Required Columns:</b> Sl.No. | Name of the Faculty | Name of Funding Agency | Amount Received | Title of the Project | Month and Year (MMYY) | Total no. of Consultancy Projects | Total no. of Client Organizations | Proof of Documents
+          </div>
+          <label style="display:flex;flex-direction:column;align-items:center;justify-content:center;border:2px dashed var(--g300);border-radius:var(--r);padding:24px;cursor:pointer;transition:.15s;background:var(--white)"
+            onmouseover="this.style.borderColor='var(--blue)';this.style.background='var(--sky)'"
+            onmouseout="this.style.borderColor='var(--g300)';this.style.background='var(--white)'">
+            <div style="font-size:32px">🤝</div>
+            <p style="font-size:13px;font-weight:700;color:var(--navy);margin-top:8px">Click to upload Consultancy Excel (.xlsx, .xls)</p>
+            <p style="font-size:11px;color:var(--g400);margin-top:4px">ETL pipeline will process and save records into MongoDB database "consultancy_data" (table: ${deptId})</p>
+            <input type="file" accept=".xlsx,.xls" style="display:none" onchange="uploadConsultancyExcel(this,'${deptId}')">
+          </label>
+          <div id="cons-xl-status" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <!-- Method 2: Manual Entry -->
+      <div class="card">
+        <div class="ch"><h3>Method 2 — Manual Entry</h3></div>
+        <div class="cb">
+          <div class="frow fc2">
+            <div class="fl"><label class="req">Name of the Faculty</label><input type="text" id="cons-faculty-name" class="inp" placeholder="e.g. Dr. Chitra K"></div>
+            <div class="fl"><label>Name of Funding Agency</label><input type="text" id="cons-funding-agency" class="inp" placeholder="e.g. ABC Technologies Pvt. Ltd."></div>
+            <div class="fl"><label>Amount Received (₹)</label><input type="number" id="cons-amount-received" class="inp" placeholder="e.g. 75000" min="0"></div>
+            <div class="fl"><label>Month and Year (MMYY)</label><input type="text" id="cons-month-year" class="inp" placeholder="e.g. 0124 for Jan 2024" maxlength="4"></div>
+            <div class="fl" style="grid-column:span 2"><label>Title of the Project</label><input type="text" id="cons-project-title" class="inp" placeholder="Full title of the consultancy project"></div>
+            <div class="fl"><label>Total no. of Consultancy Projects</label><input type="number" id="cons-total-projects" class="inp" placeholder="e.g. 2" min="0"></div>
+            <div class="fl"><label>Total no. of Client Organizations</label><input type="number" id="cons-total-client-orgs" class="inp" placeholder="e.g. 1" min="0"></div>
+            <div class="fl" style="grid-column:span 2"><label>Proof of Documents (Link/URL)</label><input type="text" id="cons-proof-document" class="inp" placeholder="https://dsatm.edu.in/proof/..."></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;margin-top:12px">
+            <button class="btn btn-pri" onclick="addManualConsultancy('${deptId}')">+ Add Consultancy Record</button>
+            <span id="cons-manual-status"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Editable Consultancy Table -->
+    <div class="card" style="width:100%;max-width:100%">
+      <div class="ch">
+        <div style="display:flex;align-items:center;gap:10px">
+          <h3>Consultancy Table (Editable)</h3>
+          <span class="badge ${(curYear||curFaculty)?'b-info':'b-done'}" id="cons-badge-count">
+            ${(curYear||curFaculty) ? `${filtered.length} of ${all.length} Records (Filtered)` : `${all.length} Records`}
+          </span>
+        </div>
+        <div class="flex gap2">
+          <button class="btn btn-out btn-sm" onclick="exportConsultancyToExcel('${deptId}')">⬇ Export Excel</button>
+          <button class="btn btn-pri btn-sm" onclick="saveAllConsultancy('${deptId}')">💾 Save Table to DB</button>
+          <button class="btn btn-red btn-sm" onclick="clearDepartmentConsultancy('${deptId}')">🗑 Clear All</button>
+        </div>
+      </div>
+
+      <!-- Filter Toolbar -->
+      <div style="padding:12px 18px;background:var(--g50);border-bottom:1px solid var(--g200);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:800;color:var(--navy);display:flex;align-items:center;gap:5px">
+            <span style="font-size:14px">⚡</span> Filter Consultancy:
+          </span>
+
+          <!-- Year Filter Dropdown -->
+          <div class="pub-dropdown">
+            <button type="button" class="btn btn-out btn-sm" id="cons-btn-year"
+              onclick="togglePubDropdown('cons-menu-year')"
+              style="display:flex;align-items:center;gap:6px;font-weight:700;${curYear?'background:#eff6ff;border-color:var(--blue);color:var(--blue);':'background:#fff;'}min-width:140px;justify-content:space-between">
+              <span>📅 <span id="cons-btn-year-lbl">${curYear || 'All Years'}</span></span>
+              <span style="font-size:9px;opacity:.6">▼</span>
+            </button>
+            <div id="cons-menu-year" class="pub-dropdown-menu">
+              <div class="pub-drop-item ${!curYear?'active':''}" onclick="selectConsultancyFilter('${deptId}','year','')">
+                <span>All Years</span><span class="badge b-pend">${all.length}</span>
+              </div>
+              ${distinctYears.map(y => `
+                <div class="pub-drop-item ${curYear===y?'active':''}" onclick="selectConsultancyFilter('${deptId}','year','${y}')">
+                  <span>${y}</span><span class="badge b-info">${yearCounts[y]}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Faculty Name Filter Dropdown -->
+          <div class="pub-dropdown">
+            <button type="button" class="btn btn-out btn-sm" id="cons-btn-faculty"
+              onclick="togglePubDropdown('cons-menu-faculty')"
+              style="display:flex;align-items:center;gap:6px;font-weight:700;${curFaculty?'background:#eff6ff;border-color:var(--blue);color:var(--blue);':'background:#fff;'}min-width:180px;justify-content:space-between">
+              <span>👤 <span id="cons-btn-faculty-lbl">${curFaculty || 'All Faculty'}</span></span>
+              <span style="font-size:9px;opacity:.6">▼</span>
+            </button>
+            <div id="cons-menu-faculty" class="pub-dropdown-menu">
+              <div class="pub-drop-item ${!curFaculty?'active':''}" onclick="selectConsultancyFilter('${deptId}','faculty','')">
+                <span>All Faculty</span><span class="badge b-pend">${all.length}</span>
+              </div>
+              ${distinctFaculty.map(f => `
+                <div class="pub-drop-item ${curFaculty===f?'active':''}" onclick="selectConsultancyFilter('${deptId}','faculty','${f.replace(/'/g,"\\'")}')">
+                  <span>${f}</span><span class="badge b-info">${facultyCounts[f]}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Clear Filters -->
+          <button id="cons-btn-clear" class="btn btn-out btn-sm"
+            onclick="clearAllConsultancyFilters('${deptId}')"
+            style="display:${(curYear||curFaculty)?'inline-flex':'none'};align-items:center;gap:4px;color:var(--red);border-color:var(--red-light);background:#fff1f2">
+            ✕ Reset Filters
+          </button>
+        </div>
+
+        <div id="cons-filter-count-badge" style="font-size:12px;color:var(--g600);font-weight:600">
+          ${(curYear||curFaculty)
+            ? `Showing <b style="color:var(--navy)">${filtered.length}</b> of <b>${all.length}</b> records`
+            : `Showing all <b style="color:var(--navy)">${all.length}</b> records`}
+        </div>
+      </div>
+
+      <div class="cb">
+        <div class="alt alt-i" style="margin-bottom:12px">
+          All cells are editable. Changes are auto-saved to DB on field change. Click <b>Save Table to DB</b> to batch-save all rows to MongoDB table "<code>${deptId}</code>" in database "<code>consultancy_data</code>".
+        </div>
+        <div class="tw">
+          <table style="min-width:1300px">
+            <thead>
+              <tr>
+                <th style="width:50px">Sl.No.</th>
+                <th>Name of the Faculty</th>
+                <th>Name of Funding Agency</th>
+                <th>Amount Received (₹)</th>
+                <th>Title of the Project</th>
+                <th style="width:80px">Month &amp; Year (MMYY)</th>
+                <th style="width:80px">Total Consultancy Projects</th>
+                <th style="width:80px">Total Client Organizations</th>
+                <th>Proof of Documents (Link)</th>
+                <th style="width:65px">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="cons-table-body">
+              ${renderConsultancyTableRows(filtered, deptId)}
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;flex-wrap:wrap;gap:10px">
+          <div style="display:flex;align-items:center;gap:12px">
+            <button class="btn btn-pri" onclick="saveAllConsultancy('${deptId}')">💾 Save Table to DB</button>
+            <span id="cons-table-save-status"></span>
+          </div>
+          <div style="font-size:12px;color:var(--g500)">
+            Department: <b>${deptId}</b> &nbsp;|&nbsp; Total Records: <b>${all.length}</b>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * ═════════════════════════════════════════════════════════
+ * PROJECT FUNDING FUNCTIONS & RENDERING
+ * ═════════════════════════════════════════════════════════
+ */
+
+async function fetchDepartmentProjectFundingFromDB(deptId) {
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/project-funding/${deptId}`);
+    const resJson = await res.json();
+    if (res.ok && resJson.success) {
+      if (!window.PROJECT_FUNDING_CACHE) window.PROJECT_FUNDING_CACHE = {};
+      window.PROJECT_FUNDING_CACHE[deptId] = resJson.data || [];
+      return resJson.data;
+    }
+  } catch (e) {
+    console.error('Error fetching Project Funding from DB:', e);
+  }
+  return null;
+}
+
+function pfGetYear(str) {
+  const s = String(str || '').trim();
+  if (!s) return '';
+  const m = s.match(/\b(20\d{2}|19\d{2})\b/);
+  if (m) return m[1];
+  if (s.length === 4 && !isNaN(s)) {
+    return s.startsWith('20') || s.startsWith('19') ? s : '20' + s.slice(2);
+  }
+  return '';
+}
+
+function selectProjectFundingFilter(deptId, filterType, val) {
+  if (!window.projectFundingFilters) window.projectFundingFilters = {};
+  if (!window.projectFundingFilters[deptId]) window.projectFundingFilters[deptId] = { year: '', title: '' };
+  window.projectFundingFilters[deptId][filterType] = val;
+  document.querySelectorAll('.pub-dropdown-menu').forEach(m => m.style.display = 'none');
+  applyProjectFundingFilters(deptId);
+}
+
+function clearAllProjectFundingFilters(deptId) {
+  if (!window.projectFundingFilters) window.projectFundingFilters = {};
+  window.projectFundingFilters[deptId] = { year: '', title: '' };
+  document.querySelectorAll('.pub-dropdown-menu').forEach(m => m.style.display = 'none');
+  applyProjectFundingFilters(deptId);
+}
+
+function updateProjectFundingFilterDropdownOptions(deptId) {
+  if (!window.projectFundingFilters) window.projectFundingFilters = {};
+  if (!window.projectFundingFilters[deptId]) window.projectFundingFilters[deptId] = { year: '', title: '' };
+  const curYear = window.projectFundingFilters[deptId].year || '';
+  const curTitle = window.projectFundingFilters[deptId].title || '';
+
+  const all = (window.PROJECT_FUNDING_CACHE && window.PROJECT_FUNDING_CACHE[deptId]) || [];
+
+  const yearCounts = {};
+  all.forEach(r => {
+    const y = pfGetYear(r.month_year);
+    if (y) yearCounts[y] = (yearCounts[y] || 0) + 1;
+  });
+  const distinctYears = Object.keys(yearCounts).sort().reverse();
+
+  const titleCounts = {};
+  all.forEach(r => {
+    const t = (r.project_title || '').trim();
+    if (t) titleCounts[t] = (titleCounts[t] || 0) + 1;
+  });
+  const distinctTitles = Object.keys(titleCounts).sort();
+
+  const yMenu = document.getElementById('pf-menu-year');
+  if (yMenu) {
+    yMenu.innerHTML = `
+      <div class="pub-drop-item ${!curYear ? 'active' : ''}" onclick="selectProjectFundingFilter('${deptId}','year','')">
+        <span>All Years</span><span class="badge b-pend">${all.length}</span>
+      </div>
+      ${distinctYears.map(y => `
+        <div class="pub-drop-item ${curYear === y ? 'active' : ''}" onclick="selectProjectFundingFilter('${deptId}','year','${y}')">
+          <span>${y}</span><span class="badge b-info">${yearCounts[y]}</span>
+        </div>
+      `).join('')}
+    `;
+  }
+
+  const tMenu = document.getElementById('pf-menu-title');
+  if (tMenu) {
+    tMenu.innerHTML = `
+      <div class="pub-drop-item ${!curTitle ? 'active' : ''}" onclick="selectProjectFundingFilter('${deptId}','title','')">
+        <span>All Project Titles</span><span class="badge b-pend">${all.length}</span>
+      </div>
+      ${distinctTitles.map(t => `
+        <div class="pub-drop-item ${curTitle === t ? 'active' : ''}" onclick="selectProjectFundingFilter('${deptId}','title','${t.replace(/'/g, "\\'")}')">
+          <span style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t}</span>
+          <span class="badge b-info">${titleCounts[t]}</span>
+        </div>
+      `).join('')}
+    `;
+  }
+}
+
+function applyProjectFundingFilters(deptId) {
+  if (!window.projectFundingFilters) window.projectFundingFilters = {};
+  if (!window.projectFundingFilters[deptId]) window.projectFundingFilters[deptId] = { year: '', title: '' };
+  const curYear = window.projectFundingFilters[deptId].year || '';
+  const curTitle = window.projectFundingFilters[deptId].title || '';
+  const all = (window.PROJECT_FUNDING_CACHE && window.PROJECT_FUNDING_CACHE[deptId]) || [];
+
+  const filtered = all.filter(r => {
+    const yMatch = !curYear || pfGetYear(r.month_year) === curYear;
+    const tMatch = !curTitle || (r.project_title || '').trim() === curTitle;
+    return yMatch && tMatch;
+  });
+
+  const yBtnLbl = document.getElementById('pf-btn-year-lbl');
+  if (yBtnLbl) yBtnLbl.textContent = curYear || 'All Years';
+  const yBtn = document.getElementById('pf-btn-year');
+  if (yBtn) {
+    yBtn.style.background = curYear ? '#eff6ff' : '#fff';
+    yBtn.style.borderColor = curYear ? 'var(--blue)' : 'var(--g300)';
+    yBtn.style.color = curYear ? 'var(--blue)' : 'var(--g700)';
+  }
+
+  const tBtnLbl = document.getElementById('pf-btn-title-lbl');
+  if (tBtnLbl) tBtnLbl.textContent = curTitle ? (curTitle.length > 25 ? curTitle.slice(0, 22) + '...' : curTitle) : 'All Project Titles';
+  const tBtn = document.getElementById('pf-btn-title');
+  if (tBtn) {
+    tBtn.style.background = curTitle ? '#eff6ff' : '#fff';
+    tBtn.style.borderColor = curTitle ? 'var(--blue)' : 'var(--g300)';
+    tBtn.style.color = curTitle ? 'var(--blue)' : 'var(--g700)';
+  }
+
+  const clearBtn = document.getElementById('pf-btn-clear');
+  if (clearBtn) clearBtn.style.display = (curYear || curTitle) ? 'inline-flex' : 'none';
+
+  const countBadge = document.getElementById('pf-filter-count-badge');
+  if (countBadge) {
+    countBadge.innerHTML = (curYear || curTitle)
+      ? `Showing <b style="color:var(--navy)">${filtered.length}</b> of <b>${all.length}</b> records`
+      : `Showing all <b style="color:var(--navy)">${all.length}</b> records`;
+  }
+
+  const hdrBadge = document.getElementById('pf-badge-count');
+  if (hdrBadge) {
+    hdrBadge.textContent = (curYear || curTitle)
+      ? `${filtered.length} of ${all.length} Records (Filtered)`
+      : `${all.length} Records`;
+    hdrBadge.className = 'badge ' + ((curYear || curTitle) ? 'b-info' : 'b-done');
+  }
+
+  const tbody = document.getElementById('pf-table-body');
+  if (tbody) tbody.innerHTML = renderProjectFundingTableRows(filtered, deptId);
+
+  updateProjectFundingFilterDropdownOptions(deptId);
+}
+
+function renderProjectFundingTableRows(records, deptId) {
+  if (!records || records.length === 0) {
+    return `<tr><td colspan="8" style="text-align:center;padding:32px 20px;color:var(--g500);font-size:13px">
+      <div style="font-size:26px;margin-bottom:6px">💰</div>
+      <b>No project funding records match the current filters.</b><br>
+      <span style="font-size:12px;color:var(--g400)">Try clearing filters or add records via Excel Upload / Manual Entry.</span>
+    </td></tr>`;
+  }
+
+  return records.map((r, i) => {
+    const sl = r.sl_no || (i + 1);
+    return `
+      <tr id="pf-row-${sl}">
+        <td style="text-align:center;font-weight:700;color:var(--navy)">${sl}</td>
+        <td><input type="text" class="inp" id="pf-row-pi-${sl}" value="${(r.pi_name || '').replace(/"/g, '&quot;')}" style="min-width:160px;font-weight:700" onchange="updateProjectFundingMemoryField('${deptId}',${sl},'pi_name',this.value)"></td>
+        <td><input type="text" class="inp" id="pf-row-copi-${sl}" value="${(r.copi_name || '').replace(/"/g, '&quot;')}" style="min-width:160px" onchange="updateProjectFundingMemoryField('${deptId}',${sl},'copi_name',this.value)"></td>
+        <td><input type="text" class="inp" id="pf-row-agency-${sl}" value="${(r.funding_agency || '').replace(/"/g, '&quot;')}" style="min-width:160px" onchange="updateProjectFundingMemoryField('${deptId}',${sl},'funding_agency',this.value)"></td>
+        <td><input type="number" class="inp" id="pf-row-amount-${sl}" value="${r.amount_received || 0}" min="0" style="min-width:110px;text-align:right" onchange="updateProjectFundingMemoryField('${deptId}',${sl},'amount_received',this.value)"></td>
+        <td>
+          <input type="text" class="inp" id="pf-row-title-${sl}" value="${(r.project_title || '').replace(/"/g, '&quot;')}" style="min-width:220px;font-weight:600;color:var(--navy)" onchange="updateProjectFundingMemoryField('${deptId}',${sl},'project_title',this.value)" placeholder="Unique Project Title">
+        </td>
+        <td><input type="text" class="inp" id="pf-row-month-${sl}" value="${(r.month_year || '').replace(/"/g, '&quot;')}" style="width:110px;text-align:center;font-family:monospace" placeholder="MON YYYY" onchange="updateProjectFundingMemoryField('${deptId}',${sl},'month_year',this.value)"></td>
+        <td style="text-align:center">
+          <button class="btn btn-red btn-sm" onclick="deleteProjectFundingRow('${deptId}',${sl})" title="Delete row" style="padding:4px 8px">🗑</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function updateProjectFundingMemoryField(deptId, slNo, field, val) {
+  if (!window.PROJECT_FUNDING_CACHE) window.PROJECT_FUNDING_CACHE = {};
+  const list = window.PROJECT_FUNDING_CACHE[deptId] || [];
+  const item = list.find(r => r.sl_no === slNo);
+  if (!item) return;
+
+  const trimmedVal = String(val).trim();
+
+  // Unique validation for project title
+  if (field === 'project_title' && trimmedVal) {
+    const isDup = list.some(r => r.sl_no !== slNo && (r.project_title || '').trim().toLowerCase() === trimmedVal.toLowerCase());
+    if (isDup) {
+      alert(`⚠️ Project Title "${trimmedVal}" already exists! Project Title must be unique.`);
+      const inputEl = document.getElementById(`pf-row-title-${slNo}`);
+      if (inputEl) inputEl.value = item.project_title || '';
+      return;
+    }
+  }
+
+  item[field] = (field === 'amount_received') ? Number(val) || 0 : trimmedVal;
+
+  const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+  fetch(`${apiBase}/api/project-funding/${deptId}/row`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(item)
+  }).then(async res => {
+    const resJson = await res.json();
+    if (!res.ok || !resJson.success) {
+      alert(`⚠️ ${resJson.message || 'Failed to save field change'}`);
+    }
+  }).catch(() => {});
+}
+
+async function uploadProjectFundingExcel(input, deptId) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const statusEl = document.getElementById('pf-xl-status');
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--blue);font-weight:700">⏳ Reading Excel file and running ETL pipeline...</span>';
+
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+      if (!rawRows || rawRows.length === 0) {
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--red);font-weight:700">⚠️ No data rows found in uploaded Excel sheet</span>';
+        return;
+      }
+
+      const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+      const res = await fetch(`${apiBase}/api/project-funding/${deptId}/etl-pipeline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: rawRows, mode: 'replace' })
+      });
+      const resJson = await res.json();
+      if (res.ok && resJson.success) {
+        if (!window.PROJECT_FUNDING_CACHE) window.PROJECT_FUNDING_CACHE = {};
+        window.PROJECT_FUNDING_CACHE[deptId] = resJson.data;
+
+        if (statusEl) {
+          statusEl.innerHTML = `<span style="color:var(--green);font-weight:700">✅ ETL Success: Saved ${resJson.importedCount} project funding records to MongoDB database "project_funding_data"!</span>`;
+        }
+
+        setTimeout(() => {
+          if (CURRENT_PAGE === 'rpc-dept') {
+            const container = document.getElementById('rpc-project-funding');
+            if (container) container.innerHTML = renderProjectFundingBlock(deptId);
+          }
+        }, 800);
+      } else {
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--red);font-weight:700">⚠️ ETL Upload failed: ${resJson.message || 'Unknown error'}</span>`;
+      }
+    } catch (err) {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red);font-weight:700">⚠️ Error parsing Excel: ${err.message}</span>`;
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function addManualProjectFunding(deptId) {
+  const piName = document.getElementById('pf-pi-name')?.value?.trim();
+  const copiName = document.getElementById('pf-copi-name')?.value?.trim() || '';
+  const fundingAgency = document.getElementById('pf-funding-agency')?.value?.trim() || '';
+  const amountReceived = Number(document.getElementById('pf-amount-received')?.value || 0);
+  const projectTitle = document.getElementById('pf-project-title')?.value?.trim();
+  const monthYear = document.getElementById('pf-month-year')?.value?.trim() || '';
+  const statusEl = document.getElementById('pf-manual-status');
+
+  if (!piName) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red);font-weight:700;font-size:12px">⚠️ Please enter the Name of the PI</span>';
+    return;
+  }
+  if (!projectTitle) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red);font-weight:700;font-size:12px">⚠️ Please enter the Title of the Project</span>';
+    return;
+  }
+
+  if (!window.PROJECT_FUNDING_CACHE) window.PROJECT_FUNDING_CACHE = {};
+  const currentList = window.PROJECT_FUNDING_CACHE[deptId] || [];
+
+  // Title uniqueness check on client side
+  const titleExists = currentList.some(r => (r.project_title || '').trim().toLowerCase() === projectTitle.toLowerCase());
+  if (titleExists) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red);font-weight:700;font-size:12px">⚠️ Title of the Project must be unique! A project with this title already exists.</span>';
+    return;
+  }
+
+  const nextSl = currentList.length + 1;
+  const newRecord = {
+    sl_no: nextSl,
+    pi_name: piName,
+    copi_name: copiName,
+    funding_agency: fundingAgency,
+    amount_received: amountReceived,
+    project_title: projectTitle,
+    month_year: monthYear
+  };
+
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/project-funding/${deptId}/row`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newRecord)
+    });
+    const resJson = await res.json();
+    if (res.ok && resJson.success) {
+      window.PROJECT_FUNDING_CACHE[deptId] = resJson.data;
+
+      if (statusEl) {
+        statusEl.innerHTML = '<span style="color:var(--green);font-weight:700;font-size:12px">✅ Saved to MongoDB database "project_funding_data"!</span>';
+        setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 3000);
+      }
+
+      ['pf-pi-name', 'pf-copi-name', 'pf-funding-agency', 'pf-amount-received', 'pf-project-title', 'pf-month-year'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+
+      if (CURRENT_PAGE === 'rpc-dept') {
+        const container = document.getElementById('rpc-project-funding');
+        if (container) container.innerHTML = renderProjectFundingBlock(deptId);
+      }
+    } else {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red);font-weight:700;font-size:12px">⚠️ ${resJson.message || 'Failed to save'}</span>`;
+    }
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red);font-weight:700;font-size:12px">⚠️ Failed to save record to DB</span>';
+  }
+}
+
+async function saveAllProjectFunding(deptId) {
+  if (!window.PROJECT_FUNDING_CACHE) window.PROJECT_FUNDING_CACHE = {};
+  const currentList = window.PROJECT_FUNDING_CACHE[deptId] || [];
+
+  currentList.forEach(r => {
+    const sl = r.sl_no;
+    const piEl = document.getElementById(`pf-row-pi-${sl}`);
+    if (piEl) r.pi_name = piEl.value.trim();
+    const copiEl = document.getElementById(`pf-row-copi-${sl}`);
+    if (copiEl) r.copi_name = copiEl.value.trim();
+    const faEl = document.getElementById(`pf-row-agency-${sl}`);
+    if (faEl) r.funding_agency = faEl.value.trim();
+    const amEl = document.getElementById(`pf-row-amount-${sl}`);
+    if (amEl) r.amount_received = Number(amEl.value) || 0;
+    const ptEl = document.getElementById(`pf-row-title-${sl}`);
+    if (ptEl) r.project_title = ptEl.value.trim();
+    const myEl = document.getElementById(`pf-row-month-${sl}`);
+    if (myEl) r.month_year = myEl.value.trim();
+  });
+
+  const statusEl = document.getElementById('pf-table-save-status');
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/project-funding/${deptId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ records: currentList })
+    });
+    const resJson = await res.json();
+    if (res.ok && resJson.success) {
+      window.PROJECT_FUNDING_CACHE[deptId] = resJson.data;
+
+      if (statusEl) {
+        statusEl.innerHTML = `<span style="color:var(--green);font-size:12px;font-weight:700">✅ Saved ${currentList.length} project funding records to MongoDB database "project_funding_data"!</span>`;
+        setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 3500);
+      }
+    } else {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red);font-size:12px;font-weight:700">⚠️ Error saving: ${resJson.message}</span>`;
+    }
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = `<span style="color:var(--red);font-size:12px;font-weight:700">⚠️ Error saving: ${e.message}</span>`;
+  }
+}
+
+async function deleteProjectFundingRow(deptId, slNo) {
+  if (!confirm(`Delete project funding record #${slNo}?`)) return;
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    const res = await fetch(`${apiBase}/api/project-funding/${deptId}/row/${slNo}`, { method: 'DELETE' });
+    const resJson = await res.json();
+    if (res.ok && resJson.success) {
+      if (!window.PROJECT_FUNDING_CACHE) window.PROJECT_FUNDING_CACHE = {};
+      window.PROJECT_FUNDING_CACHE[deptId] = resJson.data;
+
+      if (CURRENT_PAGE === 'rpc-dept') {
+        const container = document.getElementById('rpc-project-funding');
+        if (container) container.innerHTML = renderProjectFundingBlock(deptId);
+      }
+    }
+  } catch (e) {}
+}
+
+async function clearDepartmentProjectFunding(deptId) {
+  if (!confirm(`Clear ALL project funding records for department "${deptId}"? This cannot be undone.`)) return;
+  try {
+    const apiBase = (window.location.protocol.startsWith('http') && window.location.port === '5000') ? '' : 'http://localhost:5000';
+    await fetch(`${apiBase}/api/project-funding/${deptId}`, { method: 'DELETE' });
+    if (!window.PROJECT_FUNDING_CACHE) window.PROJECT_FUNDING_CACHE = {};
+    window.PROJECT_FUNDING_CACHE[deptId] = [];
+    if (CURRENT_PAGE === 'rpc-dept') {
+      const container = document.getElementById('rpc-project-funding');
+      if (container) container.innerHTML = renderProjectFundingBlock(deptId);
+    }
+  } catch (e) {}
+}
+
+function exportProjectFundingToExcel(deptId) {
+  const list = (window.PROJECT_FUNDING_CACHE && window.PROJECT_FUNDING_CACHE[deptId]) || [];
+  if (list.length === 0) { alert('No project funding records to export for this department.'); return; }
+  const exportData = list.map(r => ({
+    'Sl.No.': r.sl_no,
+    'Name of the PI': r.pi_name,
+    'Name of the CO-PI': r.copi_name,
+    'Name of Funding Agency': r.funding_agency,
+    'Amount Received': r.amount_received,
+    'Title of the Project': r.project_title,
+    'Month and Year (MON YYYY)': r.month_year
+  }));
+  const ws = XLSX.utils.json_to_sheet(exportData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Project Funding');
+  XLSX.writeFile(wb, `DSATM_${deptId}_Project_Funding_${Date.now()}.xlsx`);
+}
+
+function downloadProjectFundingSample() {
+  const sampleData = [
+    {
+      'Sl.No.': 1,
+      'Name of the PI': 'Dr. Sumithra Devi K A',
+      'Name of the CO-PI': 'Dr. Manjunath C',
+      'Name of Funding Agency': 'DST-SERB',
+      'Amount Received': 2500000,
+      'Title of the Project': 'AI-driven Smart Healthcare Surveillance System',
+      'Month and Year (MON YYYY)': 'JAN 2024'
+    },
+    {
+      'Sl.No.': 2,
+      'Name of the PI': 'Dr. Chitra K',
+      'Name of the CO-PI': 'Prof. Rajesh Kumar',
+      'Name of Funding Agency': 'VGST Karnataka',
+      'Amount Received': 1500000,
+      'Title of the Project': 'Advanced Renewable Energy Grid Optimization',
+      'Month and Year (MON YYYY)': 'MAR 2023'
+    }
+  ];
+  const ws = XLSX.utils.json_to_sheet(sampleData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Project_Funding_Sample');
+  XLSX.writeFile(wb, 'DSATM_Project_Funding_Sample_Template.xlsx');
+}
+
+function renderProjectFundingBlock(deptId) {
+  if (!window.PROJECT_FUNDING_CACHE) window.PROJECT_FUNDING_CACHE = {};
+  if (!window.PROJECT_FUNDING_CACHE[deptId]) {
+    fetchDepartmentProjectFundingFromDB(deptId).then(data => {
+      if (data && CURRENT_PAGE === 'rpc-dept') {
+        const container = document.getElementById('rpc-project-funding');
+        if (container) container.innerHTML = renderProjectFundingBlock(deptId);
+      }
+    });
+  }
+
+  if (!window.projectFundingFilters) window.projectFundingFilters = {};
+  if (!window.projectFundingFilters[deptId]) window.projectFundingFilters[deptId] = { year: '', title: '' };
+  const curYear = window.projectFundingFilters[deptId].year || '';
+  const curTitle = window.projectFundingFilters[deptId].title || '';
+
+  const all = window.PROJECT_FUNDING_CACHE[deptId] || [];
+
+  const yearCounts = {};
+  all.forEach(r => {
+    const y = pfGetYear(r.month_year);
+    if (y) yearCounts[y] = (yearCounts[y] || 0) + 1;
+  });
+  const distinctYears = Object.keys(yearCounts).sort().reverse();
+
+  const titleCounts = {};
+  all.forEach(r => {
+    const t = (r.project_title || '').trim();
+    if (t) titleCounts[t] = (titleCounts[t] || 0) + 1;
+  });
+  const distinctTitles = Object.keys(titleCounts).sort();
+
+  const filtered = all.filter(r => {
+    const yMatch = !curYear || pfGetYear(r.month_year) === curYear;
+    const tMatch = !curTitle || (r.project_title || '').trim() === curTitle;
+    return yMatch && tMatch;
+  });
+
+  // KPI calculations
+  const totalFundingProjects = all.length;
+  const uniqueFundingAgencies = new Set(all.map(r => (r.funding_agency || '').trim()).filter(Boolean)).size;
+  const totalAmountReceived = all.reduce((a, r) => a + Number(r.amount_received || 0), 0);
+  const totalPIs = new Set(all.map(r => (r.pi_name || '').trim()).filter(Boolean)).size;
+
+  return `
+    <!-- KPI Summary Cards -->
+    <div class="mcg" style="margin-bottom:18px">
+      <div class="mc grn">
+        <div class="mlbl">Total Funding Projects</div>
+        <div class="mval">${totalFundingProjects}</div>
+        <div class="msub">Total projects in DB (${deptId})</div>
+      </div>
+      <div class="mc ppl">
+        <div class="mlbl">Unique Funding Agencies</div>
+        <div class="mval">${uniqueFundingAgencies}</div>
+        <div class="msub">Distinct funding agencies</div>
+      </div>
+      <div class="mc nvy">
+        <div class="mlbl">Total Amount Received (₹)</div>
+        <div class="mval" style="font-size:18px">₹${totalAmountReceived.toLocaleString('en-IN')}</div>
+        <div class="msub">Sum across all projects</div>
+      </div>
+      <div class="mc tel">
+        <div class="mlbl">Principal Investigators</div>
+        <div class="mval">${totalPIs}</div>
+        <div class="msub">Unique PIs leading projects</div>
+      </div>
+    </div>
+
+    <!-- Upload + Manual Entry Side-by-Side -->
+    <div class="g2 mb4">
+      <!-- Method 1: Excel ETL Upload -->
+      <div class="card">
+        <div class="ch">
+          <h3>Method 1 — Excel Upload (ETL Pipeline)</h3>
+          <button class="btn btn-out btn-sm" onclick="downloadProjectFundingSample()">⬇ Sample Excel</button>
+        </div>
+        <div class="cb">
+          <div class="alt alt-i" style="margin-bottom:12px;font-size:11.5px;word-break:break-word">
+            <b>Required Columns:</b> Sl.No. | Name of the PI | Name of the CO-PI | Name of Funding Agency | Amount Received | Title of the Project | Month and Year (MON YYYY)
+          </div>
+          <label style="display:flex;flex-direction:column;align-items:center;justify-content:center;border:2px dashed var(--g300);border-radius:var(--r);padding:24px;cursor:pointer;transition:.15s;background:var(--white)"
+            onmouseover="this.style.borderColor='var(--blue)';this.style.background='var(--sky)'"
+            onmouseout="this.style.borderColor='var(--g300)';this.style.background='var(--white)'">
+            <div style="font-size:32px">💰</div>
+            <p style="font-size:13px;font-weight:700;color:var(--navy);margin-top:8px">Click to upload Project Funding Excel (.xlsx, .xls)</p>
+            <p style="font-size:11px;color:var(--g400);margin-top:4px">ETL pipeline will process and save records into MongoDB database "project_funding_data" (table: ${deptId})</p>
+            <input type="file" accept=".xlsx,.xls" style="display:none" onchange="uploadProjectFundingExcel(this,'${deptId}')">
+          </label>
+          <div id="pf-xl-status" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <!-- Method 2: Manual Entry -->
+      <div class="card">
+        <div class="ch"><h3>Method 2 — Manual Entry</h3></div>
+        <div class="cb">
+          <div class="frow fc2">
+            <div class="fl"><label class="req">Name of the PI</label><input type="text" id="pf-pi-name" class="inp" placeholder="e.g. Dr. Sumithra Devi K A"></div>
+            <div class="fl"><label>Name of the CO-PI</label><input type="text" id="pf-copi-name" class="inp" placeholder="e.g. Dr. Manjunath C"></div>
+            <div class="fl"><label>Name of Funding Agency</label><input type="text" id="pf-funding-agency" class="inp" placeholder="e.g. DST-SERB, ISRO, AICTE"></div>
+            <div class="fl"><label>Amount Received (₹)</label><input type="number" id="pf-amount-received" class="inp" placeholder="e.g. 2500000" min="0"></div>
+            <div class="fl" style="grid-column:span 2">
+              <label class="req">Title of the Project <span style="font-size:11px;color:var(--amber);font-weight:600">(Must be Unique)</span></label>
+              <input type="text" id="pf-project-title" class="inp" placeholder="Full title of the project (Must be Unique)">
+            </div>
+            <div class="fl" style="grid-column:span 2"><label>Month and Year (MON YYYY)</label><input type="text" id="pf-month-year" class="inp" placeholder="e.g. JAN 2024 or 01/2024"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;margin-top:12px">
+            <button class="btn btn-pri" onclick="addManualProjectFunding('${deptId}')">+ Add Project Funding Record</button>
+            <span id="pf-manual-status"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Editable Project Funding Table -->
+    <div class="card" style="width:100%;max-width:100%">
+      <div class="ch">
+        <div style="display:flex;align-items:center;gap:10px">
+          <h3>Project Funding Table (Editable)</h3>
+          <span class="badge ${(curYear || curTitle) ? 'b-info' : 'b-done'}" id="pf-badge-count">
+            ${(curYear || curTitle) ? `${filtered.length} of ${all.length} Records (Filtered)` : `${all.length} Records`}
+          </span>
+        </div>
+        <div class="flex gap2">
+          <button class="btn btn-out btn-sm" onclick="exportProjectFundingToExcel('${deptId}')">⬇ Export Excel</button>
+          <button class="btn btn-pri btn-sm" onclick="saveAllProjectFunding('${deptId}')">💾 Save Table to DB</button>
+          <button class="btn btn-red btn-sm" onclick="clearDepartmentProjectFunding('${deptId}')">🗑 Clear All</button>
+        </div>
+      </div>
+
+      <!-- Filter Toolbar -->
+      <div style="padding:12px 18px;background:var(--g50);border-bottom:1px solid var(--g200);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:800;color:var(--navy);display:flex;align-items:center;gap:5px">
+            <span style="font-size:14px">⚡</span> Filter Project Funding:
+          </span>
+
+          <!-- Filter 1: Year Dropdown -->
+          <div class="pub-dropdown">
+            <button type="button" class="btn btn-out btn-sm" id="pf-btn-year"
+              onclick="togglePubDropdown('pf-menu-year')"
+              style="display:flex;align-items:center;gap:6px;font-weight:700;${curYear ? 'background:#eff6ff;border-color:var(--blue);color:var(--blue);' : 'background:#fff;'}min-width:140px;justify-content:space-between">
+              <span>📅 <span id="pf-btn-year-lbl">${curYear || 'All Years'}</span></span>
+              <span style="font-size:9px;opacity:.6">▼</span>
+            </button>
+            <div id="pf-menu-year" class="pub-dropdown-menu">
+              <div class="pub-drop-item ${!curYear ? 'active' : ''}" onclick="selectProjectFundingFilter('${deptId}','year','')">
+                <span>All Years</span><span class="badge b-pend">${all.length}</span>
+              </div>
+              ${distinctYears.map(y => `
+                <div class="pub-drop-item ${curYear === y ? 'active' : ''}" onclick="selectProjectFundingFilter('${deptId}','year','${y}')">
+                  <span>${y}</span><span class="badge b-info">${yearCounts[y]}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Filter 2: Title of the Project Dropdown -->
+          <div class="pub-dropdown">
+            <button type="button" class="btn btn-out btn-sm" id="pf-btn-title"
+              onclick="togglePubDropdown('pf-menu-title')"
+              style="display:flex;align-items:center;gap:6px;font-weight:700;${curTitle ? 'background:#eff6ff;border-color:var(--blue);color:var(--blue);' : 'background:#fff;'}min-width:210px;justify-content:space-between">
+              <span>📌 <span id="pf-btn-title-lbl">${curTitle ? (curTitle.length > 25 ? curTitle.slice(0, 22) + '...' : curTitle) : 'All Project Titles'}</span></span>
+              <span style="font-size:9px;opacity:.6">▼</span>
+            </button>
+            <div id="pf-menu-title" class="pub-dropdown-menu" style="max-height:280px;overflow-y:auto;min-width:280px">
+              <div class="pub-drop-item ${!curTitle ? 'active' : ''}" onclick="selectProjectFundingFilter('${deptId}','title','')">
+                <span>All Project Titles</span><span class="badge b-pend">${all.length}</span>
+              </div>
+              ${distinctTitles.map(t => `
+                <div class="pub-drop-item ${curTitle === t ? 'active' : ''}" onclick="selectProjectFundingFilter('${deptId}','title','${t.replace(/'/g, "\\'")}')">
+                  <span style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t}</span>
+                  <span class="badge b-info">${titleCounts[t]}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Clear Filters -->
+          <button id="pf-btn-clear" class="btn btn-out btn-sm"
+            onclick="clearAllProjectFundingFilters('${deptId}')"
+            style="display:${(curYear || curTitle) ? 'inline-flex' : 'none'};align-items:center;gap:4px;color:var(--red);border-color:var(--red-light);background:#fff1f2">
+            ✕ Reset Filters
+          </button>
+        </div>
+
+        <div id="pf-filter-count-badge" style="font-size:12px;color:var(--g600);font-weight:600">
+          ${(curYear || curTitle)
+            ? `Showing <b style="color:var(--navy)">${filtered.length}</b> of <b>${all.length}</b> records`
+            : `Showing all <b style="color:var(--navy)">${all.length}</b> records`}
+        </div>
+      </div>
+
+      <div class="tw">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:60px;text-align:center">Sl.No.</th>
+              <th style="min-width:170px">Name of the PI</th>
+              <th style="min-width:170px">Name of the CO-PI</th>
+              <th style="min-width:170px">Name of Funding Agency</th>
+              <th style="min-width:130px;text-align:right">Amount Received (₹)</th>
+              <th style="min-width:240px">Title of the Project (Unique)</th>
+              <th style="min-width:120px;text-align:center">Month &amp; Year</th>
+              <th style="width:70px;text-align:center">Action</th>
+            </tr>
+          </thead>
+          <tbody id="pf-table-body">
+            ${renderProjectFundingTableRows(filtered, deptId)}
+          </tbody>
+        </table>
+      </div>
+      <div style="padding:12px 18px;background:var(--g50);border-top:1px solid var(--g200);display:flex;align-items:center;justify-content:space-between">
+        <div id="pf-table-save-status"></div>
+        <button class="btn btn-pri btn-sm" onclick="saveAllProjectFunding('${deptId}')">💾 Save Table to DB</button>
+      </div>
+    </div>
+  `;
+}
+
+
+// ══════════════════════════════════════════════════
 // RPC DEPT — Full data entry
 // ══════════════════════════════════════════════════
 function renderRPCDept(){
@@ -4903,6 +6524,8 @@ function renderRPCDept(){
       <div class="tab" onclick="swTab(this,'rpc-qp')">Quality of Pubs (QP)</div>
       <div class="tab" onclick="swTab(this,'rpc-ipr')">IPR &amp; Patents (15)</div>
       <div class="tab" onclick="swTab(this,'rpc-fppp')">FPPP (10)</div>
+      <div class="tab" onclick="swTab(this,'rpc-consultancy')">🤝 Consultancy</div>
+      <div class="tab" onclick="swTab(this,'rpc-project-funding')">💰 Project Funding</div>
       <div class="tab" onclick="swTab(this,'rpc-res')">Score Summary</div>
     </div>
 
@@ -4988,6 +6611,16 @@ function renderRPCDept(){
       <div class="card"><div class="ch"><h3>RPC Score Calculation Summary — ${cycLbl}</h3></div><div class="cb">
         <div class="cbox" id="rpc-calc-box"></div>
       </div></div>
+    </div>
+
+    <!-- ── Consultancy ── -->
+    <div class="tbc" id="rpc-consultancy">
+      ${renderConsultancyBlock(id)}
+    </div>
+
+    <!-- ── Project Funding ── -->
+    <div class="tbc" id="rpc-project-funding">
+      ${renderProjectFundingBlock(id)}
     </div>`;
   updateRPCCalc();
 }
@@ -5880,12 +7513,22 @@ async function clearAllFaculty(){
   renderFaculty();
 }
 
-function clearExpData(){
+async function clearExpData(){
   if(!confirm('Clear ALL expenditure data for this department? This cannot be undone.')) return;
   const id=CU.deptId;
-  S.exp[id]=genExp();
-  save();audit(CU.name,id,'Expenditure','All data cleared');
-  renderExpenditure();
+  try{
+    const apiBase=(window.location.protocol.startsWith('http')&&window.location.port==='5000')?'':'http://localhost:5000';
+    await fetch(`${apiBase}/api/expenditure/${id}`,{method:'DELETE'});
+  }catch(e){}
+
+  const capKeys=['library','equipment','workshop','other_cap'];
+  const opKeys=['salaries','maintenance','seminars'];
+  S.exp[id]={capex:{},opex:{}};
+  capKeys.forEach(k=>{S.exp[id].capex[k]={};cyc().EXP_YRS.forEach(y=>S.exp[id].capex[k][y]=0);});
+  opKeys.forEach(k=>{S.exp[id].opex[k]={};cyc().EXP_YRS.forEach(y=>S.exp[id].opex[k][y]=0);});
+
+  audit(CU.name,id,'Expenditure','All expenditure data cleared');
+  renderExpenditure(true);
 }
 
 function clearRPCData(){

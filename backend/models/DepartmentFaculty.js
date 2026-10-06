@@ -14,6 +14,12 @@ const facultySchema = new mongoose.Schema(
       required: [true, 'Faculty name is required'],
       trim: true
     },
+    pan_no: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: ''
+    },
     age: {
       type: Number
     },
@@ -68,6 +74,9 @@ const facultySchema = new mongoose.Schema(
 
 // Compound index on department collection for efficient querying
 facultySchema.index({ name: 1, joining_date: 1 });
+
+// Unique sparse index on pan_no to enforce uniqueness for all non-empty PAN numbers
+facultySchema.index({ pan_no: 1 }, { unique: true, sparse: true });
 
 // Helper to get or register Mongoose model in the 'faculty_data' database
 const getFacultyModel = (deptId) => {
